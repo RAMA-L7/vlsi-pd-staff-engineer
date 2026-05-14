@@ -59,7 +59,7 @@ RTL ──→ Synthesis ──→ Floorplan ──→ Placement ──→ CTS �
 ### Install
 
 ```bash
-git clone https://github.com/<your-username>/vlsi-pd-staff-engineer.git
+git clone https://github.com/RAMA-L7/vlsi-pd-staff-engineer.git
 cd vlsi-pd-staff-engineer
 
 # Get Sky130 library (if using Docker ORFS)
