@@ -1,0 +1,61 @@
+{
+  "project": "example_soc_subsystem",
+  "top_module": "datapath_design",
+
+  "clock": {
+    "name": "clk",
+    "period_ns": 7.0,
+    "uncertainty_ns": 0.3
+  },
+
+  "corners": {
+    "func_ss": {
+      "pvt": "SS / 0.9V / 125°C",
+      "lib": "sky130_fd_sc_hd__ss_100C_1v60.lib",
+      "purpose": "setup_worst",
+      "available": false,
+      "note": "Sky130 open PDK only ships TT. Flag as risk."
+    },
+    "func_tt": {
+      "pvt": "TT / 1.0V / 25°C",
+      "lib": "sky130_fd_sc_hd__tt_025C_1v80.lib",
+      "purpose": "nominal",
+      "available": true
+    },
+    "func_ff": {
+      "pvt": "FF / 1.1V / -40°C",
+      "lib": "sky130_fd_sc_hd__ff_n40C_1v95.lib",
+      "purpose": "hold_worst",
+      "available": false,
+      "note": "Sky130 open PDK only ships TT. Flag as risk."
+    }
+  },
+
+  "targets": {
+    "wns_ns": 0.0,
+    "tns_ns": 0.0,
+    "max_area_um2": 25000,
+    "max_cells": 3000,
+    "max_power_mw": null,
+    "max_transition_ns": 0.7,
+    "max_fanout": 20
+  },
+
+  "constraints": {
+    "sdc_file": "constraints/design.sdc",
+    "upf_file": null,
+    "dont_use_cells": [
+      "*_0",
+      "sky130_fd_sc_hd__probe_*",
+      "sky130_fd_sc_hd__lpflow_*"
+    ]
+  },
+
+  "optimization_preferences": {
+    "priority_order": ["timing", "area", "power"],
+    "allow_pipelining": true,
+    "max_latency_increase_cycles": 1,
+    "allow_retiming": true,
+    "max_iterations": 5
+  }
+}

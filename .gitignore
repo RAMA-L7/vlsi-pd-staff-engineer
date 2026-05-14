@@ -1,0 +1,39 @@
+# Synthesis outputs
+results/
+*.blif
+*.edif
+*_synth.v
+*_placed.v
+*_cts.v
+*_routed.v
+
+# Physical design databases
+*.def
+*.gds
+*.odb
+*.spef
+
+# Reports (generated, not committed)
+*.rpt
+*.log
+route.guide
+
+# Libraries (too large for git — users download separately)
+lib/
+*.lib
+*.lef
+*.tlef
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Node modules (if using Claude Code locally)
+node_modules/

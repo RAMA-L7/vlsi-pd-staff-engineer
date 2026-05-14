@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ============================================================
+# 1. DETECT AVAILABLE EDA TOOLS
+# ============================================================
+tools_found=""
+tools_missing=""
+
+for tool in yosys openroad sta; do
+  if command -v "$tool" &>/dev/null; then
+    tools_found="${tools_found}${tool} ($(command -v "$tool"))\\n"
+  else
+    tools_missing="${tools_missing}${tool}\\n"
+  fi
+done
+
+# Check for commercial tools (optional)
+commercial_tools=""
+for tool in dc_shell genus lec_cli fm_shell conformal; do
+  if command -v "$tool" &>/dev/null; then
+    commercial_tools="${commercial_tools}${tool} "
+  fi
+done
+
+# ============================================================
+# 2. DETECT PDK AND LIBRARIES
+# ============================================================
+pdk_info=""
+lib_files=""
+
+# Common Sky130 locations
+sky130_paths=(
+  "${PDK_ROOT:-/nonexistent}/sky130A"
+  "$HOME/.volare/sky130A"
+  "/usr/share/pdk/sky130A"
+  "/opt/pdks/sky130A"
+)
+
+for p in "${sky130_paths[@]}"; do
+  if [ -d "$p" 2>/dev/null ]; then
+    pdk_info="Sky130A at $p"
+    # Find .lib files
+    lib_count=$(find "$p" -name "*.lib" 2>/dev/null | wc -l)
+    lef_count=$(find "$p" -name "*.lef" 2>/dev/null | wc -l)
+    lib_files="Found ${lib_count} .lib files, ${lef_count} .lef files"
+    break
+  fi
+done
+
+# Also check current project for local libs
+if [ -z "$pdk_info" ]; then
+  local_libs=$(find . -maxdepth 3 -name "*.lib" 2>/dev/null | head -5)
+  if [ -n "$local_libs" ]; then
+    pdk_info="Local libraries detected"
+    lib_files="$local_libs"
+  fi
+fi
+
+# ============================================================
+# 3. LOAD QOR TARGETS (if synthesis_targets.json exists)
+# ============================================================
+targets_info=""
+targets_file="${PLUGIN_ROOT}/synthesis_targets.json"
+if [ -f "$targets_file" ]; then
+  targets_info="Loaded from $(basename "$targets_file")"
+fi
+
+# Also check project root
+project_targets="./synthesis_targets.json"
+if [ -f "$project_targets" ] && [ -z "$targets_info" ]; then
+  targets_info="Loaded from project root synthesis_targets.json"
+  targets_file="$project_targets"
+fi
+
+# ============================================================
+# 4. DETECT CURRENT PD STAGE (from design files present)
+# ============================================================
+stage_hint=""
+if ls ./*_routed.def ./*_route.def 2>/dev/null | head -1 >/dev/null 2>&1; then
+  stage_hint="Post-route design files detected — likely in signoff/ECO stage"
+elif ls ./*_cts.def 2>/dev/null | head -1 >/dev/null 2>&1; then
+  stage_hint="Post-CTS design files detected — likely in routing stage"
+elif ls ./*_placed.def ./*_place.def 2>/dev/null | head -1 >/dev/null 2>&1; then
+  stage_hint="Placed design files detected — likely in CTS stage"
+elif ls ./*.def 2>/dev/null | head -1 >/dev/null 2>&1; then
+  stage_hint="DEF files detected — likely in placement or later stage"
+elif ls ./*_synth.v ./*_netlist.v 2>/dev/null | head -1 >/dev/null 2>&1; then
+  stage_hint="Synthesized netlist detected — likely in floorplan stage"
+elif ls ./*.v ./*.sv 2>/dev/null | head -1 >/dev/null 2>&1; then
+  stage_hint="RTL files detected — likely in synthesis stage"
+fi
+
+# ============================================================
+# 5. CHECK FOR UPF/CPF (low power design detection)
+# ============================================================
+upf_info=""
+upf_files=$(find . -maxdepth 3 \( -name "*.upf" -o -name "*.cpf" \) 2>/dev/null)
+if [ -n "$upf_files" ]; then
+  upf_count=$(echo "$upf_files" | wc -l)
+  upf_info="LOW POWER DESIGN: ${upf_count} UPF/CPF file(s) found. Low power agent MUST run at every stage gate."
+fi
+
+# ============================================================
+# 6. LOAD THE EMPLOYEE HANDBOOK
+# ============================================================
+handbook_content=""
+handbook_file="${PLUGIN_ROOT}/skills/using-pd-staff-engineer/SKILL.md"
+if [ -f "$handbook_file" ]; then
+  handbook_content=$(cat "$handbook_file" 2>&1 || echo "Error reading handbook")
+fi
+
+# ============================================================
+# 7. BUILD AND OUTPUT THE CONTEXT PAYLOAD
+# ============================================================
+
+# Escape for JSON
+escape_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+env_summary="=== VLSI PD Staff Engineer — Session Init ===\\n"
+env_summary+="\\nTOOLS DETECTED:\\n${tools_found:-  (none found — install yosys, openroad, sta)}"
+if [ -n "$tools_missing" ]; then
+  env_summary+="\\nTOOLS MISSING:\\n${tools_missing}"
+fi
+if [ -n "$commercial_tools" ]; then
+  env_summary+="\\nCOMMERCIAL TOOLS: ${commercial_tools}"
+fi
+env_summary+="\\nPDK: ${pdk_info:-Not detected (set PDK_ROOT or install Sky130)}"
+env_summary+="\\nLIBRARIES: ${lib_files:-Not found}"
+env_summary+="\\nTARGETS: ${targets_info:-No synthesis_targets.json found}"
+if [ -n "$stage_hint" ]; then
+  env_summary+="\\nSTAGE HINT: ${stage_hint}"
+fi
+if [ -n "$upf_info" ]; then
+  env_summary+="\\n\\n⚠️ ${upf_info}"
+fi
+env_summary+="\\n\\n=== STAGE GATE REMINDER ==="
+env_summary+="\\nEvery PD stage requires: QoR review → LEC → Low power check"
+env_summary+="\\nAll three must PASS before handoff to the next stage."
+env_summary+="\\nThree-fix rule: 3 failed ECOs = STOP and escalate."
+
+session_context="<EXTREMELY_IMPORTANT>\\nYou have the VLSI PD Staff Engineer system.\\n\\n"
+session_context+="${env_summary}\\n\\n"
+session_context+="**Below is your operating manual — read it before doing anything:**\\n\\n"
+session_context+="$(escape_json "$handbook_content")\\n"
+session_context+="</EXTREMELY_IMPORTANT>"
+
+# Output in Claude Code format
+if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "$session_context"
+elif [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "additional_context": "%s"\n}\n' "$session_context"
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "$session_context"
+fi

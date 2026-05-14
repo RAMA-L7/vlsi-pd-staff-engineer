@@ -1,0 +1,88 @@
+
+========================================
+ VLSI PD Staff Engineer — Framework Test
+========================================
+ Project: /home/mi/projects/vlsi-pd-staff-engineer/examples/test-counter
+ Date:    Thu May 14 19:57:18 IST 2026
+========================================
+
+--- TEST 1: Project structure ---
+  ✗ FAIL: CLAUDE.md MISSING
+  ✗ FAIL: synthesis_targets.json MISSING
+  ✗ FAIL: agents/synthesis-engineer.md MISSING
+  ✗ FAIL: agents/lec-verifier.md MISSING
+  ✗ FAIL: agents/low-power-verifier.md MISSING
+  ✗ FAIL: agents/forensic-eco-debugger.md MISSING
+  ✗ FAIL: agents/floorplan-engineer.md MISSING
+  ✗ FAIL: agents/placement-engineer.md MISSING
+  ✗ FAIL: agents/cts-engineer.md MISSING
+  ✗ FAIL: agents/routing-engineer.md MISSING
+  ✗ FAIL: agents/signoff-engineer.md MISSING
+  ✗ FAIL: skills/using-pd-staff-engineer/SKILL.md MISSING
+  ✗ FAIL: skills/synthesis/SKILL.md MISSING
+  ✗ FAIL: skills/lec/SKILL.md MISSING
+  ✗ FAIL: skills/low-power/SKILL.md MISSING
+  ✗ FAIL: skills/forensic-debugging/SKILL.md MISSING
+  ✗ FAIL: skills/floorplan/SKILL.md MISSING
+  ✗ FAIL: skills/placement/SKILL.md MISSING
+  ✗ FAIL: skills/cts/SKILL.md MISSING
+  ✗ FAIL: skills/routing/SKILL.md MISSING
+  ✗ FAIL: skills/signoff/SKILL.md MISSING
+  ✗ FAIL: hooks/hooks.json MISSING
+  ✗ FAIL: hooks/session-start MISSING
+  ✓ PASS: rtl/test_counter.v exists
+  ✓ PASS: rtl/test_counter.sdc exists
+
+--- TEST 2: Hook executability ---
+  ✗ FAIL: hooks/session-start is not executable — run: chmod +x hooks/session-start
+  ✗ FAIL: hooks/run-hook.cmd is not executable — run: chmod +x hooks/run-hook.cmd
+
+--- TEST 3: Tool detection ---
+  ✓ PASS: Yosys found: Yosys 0.56+171 (git sha1 6fdcdd41d, g++ 11.4.0-1ubuntu1~22.04.2 -fPIC -O3)
+  ✓ PASS: OpenSTA found: /usr/bin/sta
+  ✓ PASS: OpenROAD available via Docker (openroad/orfs:latest)
+  ✗ FAIL: Node.js not found — install: https://nodejs.org
+  ○ SKIP: Claude Code not installed — run: npm install -g @anthropic-ai/claude-code
+
+--- TEST 4: Sky130 library ---
+  ✗ FAIL: Sky130 liberty file not found anywhere
+    You need sky130_fd_sc_hd__tt_025C_1v80.lib
+    Get it from: https://github.com/efabless/skywater-pdk-libs-sky130_fd_sc_hd
+    Or extract from Docker: docker cp $(docker create openroad/orfs:latest):/OpenROAD-flow-scripts/flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib ./lib/
+
+--- TEST 5: Yosys synthesis (the real test) ---
+  ✓ PASS: Yosys synthesis completed (exit 0)
+  ✓ PASS: Gate-level netlist written to results/test_counter_synth.v
+
+--- TEST 6: Yosys LEC (equiv_check) ---
+  ✗ FAIL: LEC failed (exit 1)
+
+4.13. Executing CHECK pass (checking for obvious problems).
+Checking module test_counter...
+Found and reported 0 problems.
+ERROR: Invalid number of arguments.
+
+--- TEST 7: OpenSTA timing (if available) ---
+  ○ SKIP: No liberty file — cannot run STA
+
+--- TEST 8: Session-start hook ---
+  ✗ FAIL: Session-start hook failed (exit 127)
+bash: hooks/session-start: No such file or directory
+
+========================================
+ RESULTS
+========================================
+
+  PASS: 7
+  FAIL: 29
+  SKIP: 2
+
+  Some tests failed. Fix the issues above before proceeding.
+
+  Common fixes:
+    - Missing Yosys:    sudo apt install yosys
+    - Missing Node.js:  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt install -y nodejs
+    - Missing Claude:   npm install -g @anthropic-ai/claude-code
+    - Missing Sky130:   See the docker cp command in TEST 4 above
+    - Hooks not exec:   chmod +x hooks/session-start hooks/run-hook.cmd
+
