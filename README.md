@@ -533,6 +533,24 @@ $Resume = $true  # Skip completed stages; only run remaining
 - **Do NOT claim GDSII ready**: Full regression not executed; GDSII generation not live-verified
 - **RTL is adaptation, not exact gate-level equivalence**: Framework-created Verilog for flow compatibility
 
+### Technology-Aware Carry Investigation (Phase 18P, soc_ctrl)
+
+Phase 18P evaluated two isolated Sky130 HD carry implementations for `soc_ctrl` (technology-aware architecture, explicit mapping/preservation) against the 18K/18L baseline (4 serial `maj3_1` carry stages, 20 cells, ~270.259 µm²; 18L SS WNS -2.3378 ns/TNS -4.0984 ns, 3 violators). No production RTL/SDC modified; no candidate promoted.
+
+| Candidate | Approach | Result (measured) |
+|---|---|---|
+| `phase18p_carry_001` | Explicit structural Kogge-Stone-style prefix (preserved Sky130 HD cells) | 32 cells, ~340.326 µm²; critical carry endpoints not shallower (carry_out[2]/sum[4] 4 stages, sum[3] 5) |
+| `phase18p_carry_002` | Hierarchical behavioral prefix (synthesis + ABC) | 24 cells, ~345.331 µm²; carry collapsed to deeper ripple (sum[4] 5 stages) |
+
+- Both candidates: exhaustive 512-case functional validation **PASS** (0 mismatches).
+- Candidate 001: supporting formal evidence (generic equivalence proven) and generic/mapped negative-control detection; automated mapped-EQY not completed due to SAT-model limitations (exhaustive equivalence + preserved-structure correspondence documented).
+- Candidate 002: did not complete the full formal qualification process (automated equivalence/mapped-EQY tooling limitations documented; no counterexample).
+- Neither candidate achieved a shallower critical carry path; mapped area increased (001 ~340.326 µm²).
+- No physical stages 04–15 executed; no new STA, DRC, or LVS results for Phase 18P.
+- External evidence: `D:\audit\phase18P_technology_aware_carry\`.
+
+**Final status:** `NO_QUALIFIED_CANDIDATE`
+
 ---
 
 ## J. GitHub Project Architecture
