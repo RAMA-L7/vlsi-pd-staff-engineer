@@ -78,7 +78,7 @@ $Top = $env:REG_DESIGN
 - **Artifact Prefix**: `soc_ctrl`
 - **Expected Output**: `soc_ctrl_synth.v`, `soc_ctrl_lec_generic.log`, etc.
 - **Framework Integration**: `-Design soc_ctrl` parameter operational; stage scripts configured; execution blocked by shell tool failure
-- **Known Limitations**: 
+- **Known Limitations**:
   - Original soc_ctrl reference is gate-level netlist, not RTL
   - Framework created RTL representation for flow compatibility
   - Full regression not yet live-executed (shell blocked)
@@ -902,7 +902,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 - Git operations (status, commit, push; blocked)
 - Remote GitHub publication (blocked; procedures documented)
 
-**Clear Distinction**: 
+**Clear Distinction**:
 - Configured: Framework supported, scripts in place, evidence from prior runs exists
 - Executed: Live tool invocation, fresh results, independent verification — blocked until shell recovery
 

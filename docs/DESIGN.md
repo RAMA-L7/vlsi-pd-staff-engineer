@@ -261,7 +261,7 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 3. **Git commit and push** to remote: `git push origin feature/F-01-claude-agent-discovery`
 4. **Verify remote publication** on `RAMA-L7/vlsi-pd-staff-engineer`
 
---- 
+---
 
 *Design Documentation — feature/F-01-claude-agent-discovery — Multi-Design v2.0*
 *Generated: 2026-11-14 — test_counter: validated baseline; soc_ctrl: integrated, pending execution*
