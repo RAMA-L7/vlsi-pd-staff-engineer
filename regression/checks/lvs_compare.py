@@ -39,20 +39,44 @@ OUTFILE = sys.argv[3] if len(sys.argv) > 3 else None
 TOP = 'TEST_COUNTER'
 
 POWER_MAP = {
-    'VGND': 'GLOBAL_GND', 'VNB': 'GLOBAL_GND', 'VSS': 'GLOBAL_GND',
-    'VPWR': 'GLOBAL_PWR', 'VDD': 'GLOBAL_PWR',
-    'VPB': 'GLOBAL_PB',
+    'VGND': 'GLOBAL_GND', 'VNB': 'GLOBAL_GND', 'VSS': 'GLOBAL_GND', 'GND': 'GLOBAL_GND',
+    'VPWR': 'GLOBAL_PWR', 'VDD': 'GLOBAL_PWR', 'PWR': 'GLOBAL_PWR',
+    'VPB': 'GLOBAL_PB', 'VNW': 'GLOBAL_PB',
 }
 
 
 def norm_name(n):
-    """Normalise a SPICE node name: strip the leading backslash escape."""
+    """Normalise a SPICE node name."""
     if n is None:
         return None
     s = str(n).strip()
     if s.startswith('\\'):
         s = s[1:]
+    s = s.replace('\\[', '[').replace('\\]', ']')
     return s.upper()
+
+
+def canon(net):
+    if net is None:
+        return net
+    u = str(net).upper()
+    if u in POWER_MAP:
+        return POWER_MAP[u]
+    if '|' in u:
+        parts = [p for p in u.split('|') if p]
+        mapped = [POWER_MAP.get(p, p) for p in parts]
+        if mapped and all(m == mapped[0] for m in mapped):
+            return mapped[0]
+        gset = set(mapped)
+        if gset <= {'GLOBAL_GND', 'GLOBAL_PB'} and 'GLOBAL_GND' in gset:
+            return 'GLOBAL_GND'
+        if gset <= {'GLOBAL_PWR', 'GLOBAL_PB'} and 'GLOBAL_PWR' in gset:
+            return 'GLOBAL_PWR'
+        return '|'.join(sorted(set(mapped)))
+    u2 = u.replace('\\[', '[').replace('\\]', ']')
+    if u2 in POWER_MAP:
+        return POWER_MAP[u2]
+    return u2
 
 
 def strip_continuations(text):
@@ -193,19 +217,14 @@ def flatten(subckts, top):
             nn = []
             for nd in nodes:
                 if nd in pins:
-                    # external node -> the parent's net
-                    nn.append(rename.get(nd, nd))
+                    # external node -> the parent's net / canonical power rail
+                    r = rename.get(nd, nd)
+                    nn.append(canon(r))
                 else:
-                    # internal node -> namespaced per instance so that nodes of
-                    # different instances never alias each other
+                    # internal node -> namespaced per instance
                     nn.append(prefix + nd)
             nets.update(nn)
             ws, ls = eff_params(params)
-            # The node tuple keeps the SPICE terminal order (D G S B) so that
-            # the BULK terminal can be identified positionally.  Sorting the
-            # tuple would destroy that information and make any
-            # terminal-role comparison (e.g. the bulk / n-well terminal)
-            # meaningless.
             devices.append((model, ws, ls, tuple(nn)))
         for (inst, cell, nets_list) in c['xs']:
             sub = subckts.get(cell)
@@ -215,10 +234,17 @@ def flatten(subckts, top):
             for i, formal in enumerate(sub['pins']):
                 actual = nets_list[i] if i < len(nets_list) else '??'
                 a = rename.get(actual.upper(), actual.upper())
-                # a net attached to a global power pin is a global power net
-                if formal.upper() in POWER_MAP:
-                    a = POWER_MAP[formal.upper()]
-                nmap[formal.upper()] = a
+                fa = formal.upper()
+                # canonicalize power rails (including combined forms)
+                ca = canon(a)
+                cf = canon(fa)
+                if cf in ('GLOBAL_GND','GLOBAL_PWR','GLOBAL_PB'):
+                    a = cf
+                elif ca in ('GLOBAL_GND','GLOBAL_PWR','GLOBAL_PB'):
+                    a = ca
+                else:
+                    a = ca
+                nmap[fa] = a
             for v in nmap.values():
                 nets.add(v)
             rec(cell, nmap, depth + 1, prefix + inst + '/')
@@ -242,14 +268,32 @@ def signature(devs):
     return inc
 
 
-def _device_terminal_sig(ncol, model, w, l, nodes):
-    """Terminal-position-aware device signature.
+def _is_mos_model(model):
+    m = (model or '').upper()
+    if 'NFET' in m or 'PFET' in m:
+        return True
+    if 'NMOS' in m or 'PMOS' in m:
+        return True
+    return False
 
-    Terminal order is preserved (e.g. MOS D,G,S,B) so swaps of terminal
-    connectivity are detected. Internal net names are never used directly;
-    only their structural colours participate.
-    """
-    term_cols = tuple(ncol.get(n, 0) for n in nodes)
+
+def _mos_term_roles(model, nterms):
+    # For standard 4-terminal MOS (D,G,S,B), treat D/S as symmetric roles.
+    if _is_mos_model(model) and nterms == 4:
+        return (0, 1, 0, 3)  # 0=diffusion role
+    return tuple(range(nterms))
+
+
+def _device_terminal_sig(ncol, model, w, l, nodes):
+    """Terminal-position-aware device signature with MOS D/S symmetry."""
+    cols = [ncol.get(n, 0) for n in nodes]
+    if _is_mos_model(model) and len(cols) == 4:
+        # D,G,S,B -> canonicalize D/S colors under symmetric role
+        d, g, s, b = cols[0], cols[1], cols[2], cols[3]
+        ds = tuple(sorted((d, s)))
+        term_cols = (('DS', ds), ('G', g), ('B', b))
+    else:
+        term_cols = tuple(cols)
     return (model, w, l, term_cols)
 
 
@@ -273,20 +317,19 @@ def wl_hash(inc, devs, iters=6, anchors=None):
             devcols.append(hash(sig))
         ndcol = {}
         for i, dc in enumerate(devcols):
+            roles = _mos_term_roles(devs[i][0], len(devs[i][3]))
             for ti, n in enumerate(devs[i][3]):
-                # Include terminal index in net's view of attached device colour
-                ndcol.setdefault(n, []).append((ti, dc))
+                role = roles[ti] if ti < len(roles) else ti
+                ndcol.setdefault(n, []).append((role, dc))
         for n in inc:
             if n in anchors:
-                # Keep anchor identity but incorporate neighborhood to propagate
                 ncol[n] = hash(('ANCHOR', anchors[n], tuple(sorted(ndcol.get(n, [])))))
             else:
                 ncol[n] = hash(('NET', tuple(sorted(ndcol.get(n, [])))))
     return Counter(hash(_device_terminal_sig(ncol, d[0], d[1], d[2], d[3])) for d in devs)
 
 
-def canon(net):
-    return POWER_MAP.get(net.upper(), net)
+# canon defined above
 
 
 def wl_net_colours(inc, devs, iters=6, anchors=None):
@@ -303,11 +346,14 @@ def wl_net_colours(inc, devs, iters=6, anchors=None):
     for _ in range(iters):
         devcols = []
         for i, (model, w, l, nodes) in enumerate(devs):
-            devcols.append(hash(_device_terminal_sig(ncol, model, w, l, nodes)))
+            sig = _device_terminal_sig(ncol, model, w, l, nodes)
+            devcols.append(hash(sig))
         ndcol = {}
         for i, dc in enumerate(devcols):
+            roles = _mos_term_roles(devs[i][0], len(devs[i][3]))
             for ti, n in enumerate(devs[i][3]):
-                ndcol.setdefault(n, []).append((ti, dc))
+                role = roles[ti] if ti < len(roles) else ti
+                ndcol.setdefault(n, []).append((role, dc))
         for n in inc:
             if n in anchors:
                 ncol[n] = hash(('ANCHOR', anchors[n], tuple(sorted(ndcol.get(n, [])))))
@@ -406,36 +452,54 @@ def main():
     # --- structural connectivity ---------------------------------------------
     linc = signature(ldev)
     sinc = signature(sdev)
-    # Anchor top-level port nets by port identity so port/pin swaps are detected.
-    # Use port names from subckt pin lists; map to actual nets connected at top level.
-    def top_port_anchors(circ, dev_nets):
-        anchors = {}
-        for i, p in enumerate(circ['pins']):
-            key = norm_name(p)
-            # find actual net name used in flattened context for this port
-            # top-level ports may be passed through; use canonical mapping
-            if key in dev_nets:
-                anchors[key] = ('PORT', i, key)
-            # also try power-canonicalized name
-            ck = canon(key)
-            if ck in dev_nets:
-                anchors[ck] = ('PORT', i, ck, key)
-            # direct upper
-            if key not in anchors and key in [norm_name(x) for x in dev_nets]:
-                anchors[key] = ('PORT', i, key)
-        # Also anchor by the pin names as they appear (flattened top-level nets
-        # are typically the same names for ports in our extraction flows)
-        for i, p in enumerate(circ['pins']):
-            n = norm_name(p)
-            anchors.setdefault(n, ('PORT', i, n))
-            cn = canon(n)
-            if cn != n:
-                anchors.setdefault(cn, ('PORT', i, cn, n))
-        # restrict to nets present
-        return {n: v for n, v in anchors.items() if n in dev_nets}
+    def _port_key(name):
+        n = norm_name(name)
+        c = canon(n)
+        # unify rail aliases to canonical rail identity
+        if c in ('GLOBAL_GND','GLOBAL_PWR','GLOBAL_PB'):
+            return ('RAIL', c)
+        # normalize bus/index forms
+        return ('NET', n.replace('\\[','[').replace('\\]',']'))
 
-    lanchors = top_port_anchors(lt, lnets)
-    sanchors = top_port_anchors(st, snets)
+    def top_port_anchors_pair(lt_c, st_c, lnets, snets):
+        lpins = [norm_name(p) for p in lt_c['pins']]
+        spins = [norm_name(p) for p in st_c['pins']]
+        lkeys = [_port_key(p) for p in lpins]
+        skeys = [_port_key(p) for p in spins]
+        # map key -> list of (index, pin_name)
+        from collections import defaultdict as _dd
+        lmap=_dd(list); smap=_dd(list)
+        for i,(k,pn) in enumerate(zip(lkeys,lpins)): lmap[k].append((i,pn))
+        for i,(k,pn) in enumerate(zip(skeys,spins)): smap[k].append((i,pn))
+        lanchors={}; sanchors={}
+        # anchor only keys present on both sides with unique correspondence
+        for k in set(lmap) & set(smap):
+            la=lmap[k]; sa=smap[k]
+            if len(la)==1 and len(sa)==1:
+                aid=('PORT', k)
+                # attach to canonical net name forms present in flattened nets
+                for pn in [la[0][1], canon(la[0][1])]:
+                    if pn in lnets: lanchors[pn]=aid
+                for pn in [sa[0][1], canon(sa[0][1])]:
+                    if pn in snets: sanchors[pn]=aid
+            elif len(la)==len(sa):
+                # same multiplicity (e.g. multiple pins map to same rail) - anchor by rail key
+                aid=('PORT', k, len(la))
+                for _,pn in la:
+                    for nn in [pn, canon(pn)]:
+                        if nn in lnets: lanchors[nn]=aid
+                for _,pn in sa:
+                    for nn in [pn, canon(pn)]:
+                        if nn in snets: sanchors[nn]=aid
+        # also ensure top-level ports that are canonical rails are anchored consistently
+        for circ,nets,anc in [(lt_c,lnets,lanchors),(st_c,snets,sanchors)]:
+            for i,p in enumerate(circ['pins']):
+                n=norm_name(p); c=canon(n)
+                if c in ('GLOBAL_GND','GLOBAL_PWR','GLOBAL_PB') and c in nets and c not in anc:
+                    anc[c]=('PORT', ('RAIL', c))
+        return {n:v for n,v in lanchors.items() if n in lnets}, {n:v for n,v in sanchors.items() if n in snets}
+
+    lanchors, sanchors = top_port_anchors_pair(lt, st, lnets, snets)
     lh = wl_hash(linc, ldev, anchors=lanchors)
     sh = wl_hash(sinc, sdev, anchors=sanchors)
     common = lh & sh
