@@ -1,0 +1,9 @@
+* missing device
+.subckt INVX1 A Y VGND VNB VPB VPWR
+M0 Y A VGND VNB nshort w=0.42u l=0.15u
+M1 Y A VPWR VPB pshort w=0.84u l=0.15u
+.ends
+.subckt TEST_COUNTER in1 in2 out VGND VPWR
+X1 in1 nint VGND VGND VPWR VPWR INVX1
+X2 in2 out  VGND VGND VPWR VPWR INVX1
+.ends
