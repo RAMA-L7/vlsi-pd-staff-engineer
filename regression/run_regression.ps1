@@ -80,8 +80,12 @@ $EvidenceDir = Join-Path $Root 'evidence'
 if (-not $Workspace) { $Workspace = Join-Path $Root 'workspace' }
 New-Item -ItemType Directory -Force -Path $Workspace, $EvidenceDir | Out-Null
 
-if (-not $RunId) { $RunId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ') }
-if (-not $RunDir) { $RunDir = Join-Path $Workspace "run_$RunId" }
+if ($RunDir) {
+  if (-not $RunId) { $RunId = Split-Path -Leaf $RunDir }
+} else {
+  if (-not $RunId) { $RunId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ') }
+  $RunDir = Join-Path $Workspace "run_$RunId"
+}
 if ($Clean -and (Test-Path $RunDir)) {
   Remove-Item -Recurse -Force $RunDir
 }
@@ -377,10 +381,31 @@ foreach ($k in $toolProbe.Keys) {
 }
 
 # --------------------------------------------------------------------------- PDK revisions
-foreach ($d in (Get-ChildItem 'D:\tools\pdk\skywater-pdk-complete' -Directory)) {
-  $r = (& git -C $d.FullName rev-parse HEAD 2>$null)
-  $report.pdk_revisions[$d.Name] = if ($r) { $r.Trim() } else { 'unknown' }
+$pdkRoot = if ($env:REG_PDK_COMPLETE_ROOT) { $env:REG_PDK_COMPLETE_ROOT } else { 'D:\tools\pdk\skywater-pdk-complete' }
+if (Test-Path $pdkRoot) {
+  foreach ($d in (Get-ChildItem $pdkRoot -Directory)) {
+    $r = (& git -C $d.FullName rev-parse HEAD 2>$null)
+    $report.pdk_revisions[$d.Name] = if ($r) { $r.Trim() } else { 'unknown' }
+  }
 }
+
+# --------------------------------------------------------------------------- manifest lifecycle (Phase 33)
+$ManifestMgr = Join-Path $CheckDir 'manifest_manager.py'
+$RunManifest = Join-Path $RunDir 'run_manifest.json'
+function Invoke-Manifest([string[]]$margs) {
+  if (-not (Test-Path $ManifestMgr)) { return $null }
+  try {
+    $out = & $Python $ManifestMgr @margs 2>&1
+    return @{ rc = $LASTEXITCODE; out = ($out -join "`n") }
+  } catch {
+    return @{ rc = 99; out = $_.Exception.Message }
+  }
+}
+# initialize run manifest with identity/tooling
+$toolsJson = ($report.tools | ConvertTo-Json -Compress -Depth 6)
+$initArgs = @('init', $RunDir, '--run-id', $RunId, '--project-name', $Design, '--project-id', $Design, '--top-module', $Design, '--tool-versions-json', $toolsJson)
+$mi = Invoke-Manifest $initArgs
+if ($mi) { Write-Host "  manifest init rc=$($mi.rc)" }
 
 # --------------------------------------------------------------------------- stage execution
 $statusFile = Join-Path $RunDir 'stage_status.json'
@@ -485,15 +510,61 @@ foreach ($name in $order) {
   })
   Write-Json $status $statusFile
 
+  # --- manifest stage update (atomic, best-effort) -------------------------
+  if (Test-Path $ManifestMgr) {
+    try {
+      $outArts = @()
+      foreach ($a in @($s.Art)) {
+        $ap = Join-Path $RunDir $a
+        $exists = Test-Path $ap
+        $outArts += [ordered]@{
+          path = $ap; artifact_path = $ap; required = $true; exists = $exists
+          sha256 = if ($exists) { (Get-Sha256 $ap) } else { $null }
+          size = if ($exists) { (Get-Item $ap).Length } else { 0 }
+        }
+      }
+      $logArts = @()
+      if (Test-Path $logWin) {
+        $logArts += [ordered]@{ path = $logWin; required = $false; exists = $true; sha256 = (Get-Sha256 $logWin); size = (Get-Item $logWin).Length }
+      }
+      $stageStatus = if ($rc -eq 0) { 'PASS' } else { 'FAIL' }
+      $srRec = [ordered]@{
+        stage_id = $name; stage = $name; run_id = $RunId
+        stage_status = $stageStatus; status = $stageStatus
+        stage_exit_code = $rc; exit_code = $rc
+        start_timestamp = $t0.ToUniversalTime().ToString('o'); started_utc = $t0.ToUniversalTime().ToString('o')
+        end_timestamp = $t1.ToUniversalTime().ToString('o'); finished_utc = $t1.ToUniversalTime().ToString('o')
+        tool_versions = $report.tools
+        input_artifacts = @(); output_artifacts = $outArts; logs = $logArts
+        evidence_class = 'FRESH_EXECUTION'
+      }
+      $srTmp = Join-Path $RunDir "._manifest_${name}.json"
+      Write-Json $srRec $srTmp
+      $mu = Invoke-Manifest @('upsert-stage', $RunDir, '--stage-json-file', $srTmp)
+      Remove-Item $srTmp -Force -ErrorAction SilentlyContinue
+      if ($mu) { Write-Host "  manifest update rc=$($mu.rc)" }
+    } catch {
+      Write-Host "  manifest update error: $($_.Exception.Message)"
+    }
+  }
+
   if ($rc -ne 0) {
     Write-Host "  stage FAILED (exit $rc) - remaining stages are skipped"
     break
   }
 }
 
+# --------------------------------------------------------------------------- manifest finalize (pre-acceptance)
+if (Test-Path $ManifestMgr) {
+  $preOverall = 'PARTIAL'
+  $mf = Invoke-Manifest @('finalize', $RunDir, '--run-status', $preOverall)
+  if ($mf) { Write-Host "  manifest finalize(pre) rc=$($mf.rc)" }
+}
+
 # --------------------------------------------------------------------------- acceptance checks
 $accJson = Join-Path $RunDir 'acceptance.json'
 $accTxt = Join-Path $RunDir 'acceptance.txt'
+$accRc = 0
 if (-not $ValidateOnly) {
   Write-Host ""
   Write-Host "--------- independent acceptance checks"
@@ -502,6 +573,9 @@ if (-not $ValidateOnly) {
   $accRc = $LASTEXITCODE
   if (Test-Path $accTxt) { Get-Content $accTxt | ForEach-Object { Write-Host "    $_" } }
   Write-Host "  acceptance exit=$accRc"
+} else {
+  # validate-only: still run acceptance/manifest validation if desired
+  $accRc = 0
 }
 
 # --------------------------------------------------------------------------- merge results

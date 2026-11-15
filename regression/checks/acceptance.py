@@ -507,6 +507,74 @@ else:
     ms = re.search(r'WL_SCHEMATIC_TOTAL: (\d+)', cm)
     check(S, 'independent_structure_match', m is not None and mt is not None and ms is not None and m.group(1) == mt.group(1) == ms.group(1) and int(m.group(1)) > 0, 'Weisfeiler-Lehman device-colour classes matched=%s of %s/%s' % (m.group(1) if m else '?', mt.group(1) if mt else '?', ms.group(1) if ms else '?'))
 
+# ===================================================================== manifest (Phase 33 integration)
+S = 'manifest'
+manifest_path = RUN + '/run_manifest.json'
+mgr_candidates = [
+    os.path.join(os.path.dirname(__file__), 'manifest_manager.py'),
+    os.path.join(RUN, '..', '..', 'checks', 'manifest_manager.py'),
+]
+mgr = next((p for p in mgr_candidates if os.path.exists(p)), None)
+# Find check dir via env if available
+check_dir = os.environ.get('REG_CHECK_DIR')
+if not mgr and check_dir:
+    p = os.path.join(check_dir, 'manifest_manager.py')
+    if os.path.exists(p): mgr = p
+
+if not os.path.exists(manifest_path):
+    # Manifest not yet present in older runs; do not force-fail historical evidence, but record
+    skip(S, 'manifest_exists', 'run_manifest.json not present')
+    skip(S, 'manifest_valid', 'manifest not present')
+else:
+    check(S, 'manifest_exists', True, manifest_path)
+    valid = False
+    detail = 'not validated'
+    errors = []
+    if mgr:
+        import subprocess as _sp
+        # try python3 then python
+        cmd = None
+        for py in ('python3', 'python', os.environ.get('REG_PYTHON','')):
+            if py:
+                cmd = [py, mgr, 'validate', RUN, '--manifest-path', manifest_path]
+                break
+        try:
+            p = _sp.run(cmd, capture_output=True, text=True, cwd=RUN)
+            try:
+                vr = json.loads(p.stdout) if p.stdout.strip().startswith('{') else {}
+            except Exception:
+                vr = {}
+            valid = (p.returncode == 0 and vr.get('status') == 'PASS')
+            errors = vr.get('errors', [])
+            detail = ('OK' if valid else ('errors=' + '; '.join(errors[:5])))
+        except Exception as e:
+            valid = False
+            detail = 'validator error: %s' % e
+    else:
+        # basic checks
+        try:
+            with open(manifest_path, 'r', encoding='utf-8-sig') as f:
+                mj = json.load(f)
+            basic_ok = bool(mj.get('run_id')) and bool(mj.get('stages') is not None)
+            valid = basic_ok
+            detail = 'basic checks only (manifest_manager.py not found)'
+        except Exception as e:
+            valid = False
+            detail = 'invalid: %s' % e
+    check(S, 'manifest_valid', valid, detail)
+    # active-run identity: manifest run_id should match run dir name if it looks like a run id
+    try:
+        with open(manifest_path, 'r', encoding='utf-8-sig') as f:
+            mj = json.load(f)
+        run_base = os.path.basename(RUN.rstrip('/'))
+        rid = mj.get('run_id')
+        if rid and (run_base == rid or run_base.startswith('run_')):
+            check(S, 'manifest_run_identity_matches', rid == run_base or rid in run_base or run_base.endswith(rid), 'manifest.run_id=%s run=%s' % (rid, run_base))
+        else:
+            skip(S, 'manifest_run_identity_matches', 'cannot infer expected run id')
+    except Exception as e:
+        check(S, 'manifest_run_identity_matches', False, str(e))
+
 # ===================================================================== output
 npass = len([r for r in RESULTS if r['status'] == 'PASS'])
 nfail = len([r for r in RESULTS if r['status'] == 'FAIL'])
