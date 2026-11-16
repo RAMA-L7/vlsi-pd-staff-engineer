@@ -24,7 +24,7 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 | Genuine Sky130 LVS PASS | Official `sky130hd.lylvs`: "Congratulations! Netlists match." | Phase 13 |
 | Automated Regression | 15-stage flow with acceptance checks | Phase 14 |
 | 88 Acceptance Checks | All checks pass per run (both runs A & B) | Phase 14 |
-| Two Reproducible Runs | Run A & B: 88/88 checks, 20/20 artefacts identical | Phase 14 |
+| Two Reproducible Runs | Run A & B: 88/88 checks (historical), 20/20 artefacts identical | Phase 14; current baseline 95/95 |
 | Twenty Identical Compared Artifacts | Bit-identical across runs after timestamp stripping | Phase 14 |
 | Seven Negative Tests Detected | N1–N7 all DETECTED independently | Phase 15 |
 | Multi-Design Framework Integration | `-Design` parameter; `test_counter` + `soc_ctrl` | Phase 15 |
@@ -69,11 +69,11 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
   - Multi-corner STA: TT/SS/FF, 0 violators at every corner
 
 #### Phase 14: Automated Regression, 88 Acceptance Checks, Two Reproducible Runs and Seven Negative Tests
-- **Achievement**: Complete 15-stage automated regression; 88/88 acceptance checks passing per run; two independent runs (A & B) OVERALL PASS; 20/20 artefacts identical; seven negative tests (N1–N7) all DETECTED
+- **Achievement**: Complete 15-stage automated regression; 88/88 acceptance checks (Phase 14 historical; current baseline 95/95) per run; two independent runs (A & B) OVERALL PASS; 20/20 artefacts identical; seven negative tests (N1–N7) all DETECTED
 - **Status**: ✅ Complete
 - **Details**:
   - REPRODUCIBLE classification: Both runs A&B OVERALL PASS
-  - 88/88 acceptance checks pass per run
+  - 88/88 acceptance checks pass per run (Phase 14 historical); current baseline 95/95
   - 20/20 artefacts compared: bit-identical
   - GDSII geometry identical after timestamp stripping
   - N7 negative test: net swap injected into `15a_lvs_refcdl.tcl`; LVS reports mismatch (DETECTED) ✅
@@ -87,8 +87,8 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
   - `-Design` parameter on `run_regression.ps1` (test_counter, soc_ctrl)
   - `$DesignConfig` hashtable mapping design names to RTL/SDC paths and artifact prefixes
   - `01_synthesis.ps1` design-aware via `$Top = $env:REG_DESIGN`
-  - soc_ctrl RTL: `examples/soc_ctrl/rtl/soc_ctrl.v` (4-bit adder/controller)
-  - soc_ctrl SDC: `examples/soc_ctrl/rtl/soc_ctrl.sdc` (period 10.0 ns)
+- soc_ctrl RTL: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` ABSENT from published tree (untracked in preserved tree only)
+- soc_ctrl SDC: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` ABSENT from published tree (untracked in preserved tree only)
   - All 9 agents integrated with design-aware paths
   - All 10 skills configured for both designs
   - REPRODUCIBLE classification maintained for test_counter
@@ -147,7 +147,7 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 | **Design Selection** | ✅ `-Design` parameter operational | test_counter, soc_ctrl |
 | **Sky130 PDK Integration** | ✅ Available and verified | Functional models, Liberty corners, LEF, GDSII cell library |
 | **EDA Tool Paths** | ✅ Documented (EDA_TOOL_REGISTRY.md) | Most tools under `D:\\tools\\`; WSL-dependent noted |
-| **Reproducible Baseline** | ✅ REPRODUCIBLE (Phase 14) | Two runs A&B; 88/88 checks; 20/20 artefacts identical |
+| **Reproducible Baseline** | ✅ REPRODUCIBLE (Phase 14) | Two runs A&B; 88/88 checks (Phase 14 historical; current baseline 95/95); 20/20 artefacts identical |
 | **Negative Test Suite** | ✅ Configured and verified | N1–N7 all DETECTED; N7 fix in `15a_lvs_refcdl.tcl` |
 | **soc_ctrl Integration** | ✅ Framework configured | RTL + SDC created; full regression pending execution |
 | **Shell Execution Blocker (historical)** | ⚠️ Resolved for baseline | Historically reported Code Mode runtime issue (Phase 14–17A); documented baseline command now executes 16/16 stages PASS |
@@ -155,7 +155,7 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 #### Execution Status
 | Design | Regression Status | Evidence |
 |---|---|---|
-| **test_counter** | REPRODUCIABLE baseline (Phase 14 + 2026-11-16) | Two runs A&B OVERALL PASS; 88/88 checks; 20/20 artefacts identical; baseline command 16/16 stages PASS, 92 checks |
+| **test_counter** | REPRODUCIABLE baseline (Phase 14 + 2026-11-16) | Two runs A&B OVERALL PASS; 88/88 checks (Phase 14 historical); 20/20 artefacts identical; 2026-11-16 baseline command 16/16 stages PASS, 92 stage + 3 manifest = 95 checks |
 | **soc_ctrl** | Configured; full regression not executed in this pass | Framework integration verified; RTL + SDC created; stage scripts design-aware |
 
 #### Current Execution Status

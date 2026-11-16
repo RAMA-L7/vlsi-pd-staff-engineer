@@ -38,8 +38,8 @@ $DesignConfig = @{
     NetlistMapped = "$ArtPrefix/synth/generic_${ArtPrefix}_synth.v"
   }
   soc_ctrl = @{
-    Rtl       = "$Rtl_soc_ctrl"      # examples/soc_ctrl/rtl/soc_ctrl.v
-    Sdc       = "$Sdc_soc_ctrl"      # examples/soc_ctrl/rtl/soc_ctrl.sdc
+    Rtl       = "$Rtl_soc_ctrl"      # examples/soc_ctrl/rtl/soc_ctrl.v — canonical ABSENT from published 27b5d1c
+    Sdc       = "$Sdc_soc_ctrl"      # examples/soc_ctrl/rtl/soc_ctrl.sdc — canonical ABSENT from published 27b5d1c
     ArtPrefix = "soc_ctrl"           # prevents cross-design collision
     LibDir    = $LibDir              # D:\tools\pdk\skywater-pdk-complete\
     LibTT     = "$LibDir/sky130_fd_sc_hd__tt_025C_1v80.lib"
@@ -68,12 +68,12 @@ $Top = $env:REG_DESIGN
 - **Top Module**: `test_counter`
 - **Artifact Prefix**: `test_counter`
 - **Expected Output**: `test_counter_synth.v`, `test_counter_lec_generic.log`, etc.
-- **Baseline (Phase 14)**: REPRODUCIBLE — two runs A&B OVERALL PASS, 88/88 acceptance checks, 20/20 artefacts identical
+- **Baseline (Phase 14)**: REPRODUCIBLE — two runs A&B OVERALL PASS, 88/88 acceptance checks (historical; current baseline 95/95), 20/20 artefacts identical
 
 ### soc_ctrl Configuration
 
-- **RTL**: `examples/soc_ctrl/rtl/soc_ctrl.v` (synthesizable Verilog for 4-bit adder/controller)
-- **SDC**: `examples/soc_ctrl/rtl/soc_ctrl.sdc` (period 10.0 ns, 100 MHz assumptions)
+- **RTL**: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` ABSENT from published tree (untracked in preserved tree only)
+- **SDC**: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` ABSENT from published tree (untracked in preserved tree only)
 - **Top Module**: `soc_ctrl`
 - **Artifact Prefix**: `soc_ctrl`
 - **Expected Output**: `soc_ctrl_synth.v`, `soc_ctrl_lec_generic.log`, etc.
@@ -822,11 +822,11 @@ Seven negative tests (N1–N7) inject faults/deficiencies into the regression fl
 
 ### Reproducibility
 
-**Phase 14 Baseline**: REPRODUCIBLE — two independent runs (A & B) both OVERALL PASS with 88/88 acceptance checks passing across all stages; all 20 compared artefacts are bit-identical; GDSII geometry identical after timestamp stripping.
+**Phase 14 Baseline**: REPRODUCIBLE — two independent runs (A & B) both OVERALL PASS with 88/88 acceptance checks (Phase 14 historical; current baseline 95/95) across all stages; all 20 compared artefacts are bit-identical; GDSII geometry identical after timestamp stripping.
 
 **Reproducibility Verification**:
 - Run A and Run B both produce OVERALL PASS
-- 88/88 acceptance checks pass per run
+- 88/88 acceptance checks pass per run (Phase 14 historical); current baseline 95/95
 - 20/20 compared artefacts are bit-identical
 - GDSII geometry identical after BGNLIB type-0x0001 timestamp records stripped (24+ bytes)
 - Per-stage status mismatches: 0; Check-status mismatches: 0

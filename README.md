@@ -24,7 +24,7 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 
 **Framework Scope**: Sky130 HD ASIC physical design flow from RTL to GDSII, with two independently configurable designs (test_counter and soc_ctrl), negative-test fault detection, and reproducible validation.
 
-**Current Execution Status**: Framework is fully configured and verified. The documented baseline command (`python -m assistant baseline`) executes the full regression on `test_counter` — 16/16 stages PASS, 92 checks, reproduced twice with byte-identical netlists; live LEC and STA gates also pass. `soc_ctrl` is configured but was not executed in this pass. A Code Mode runtime shell integration issue was historically reported during Phases 14–17A (see `docs/VALIDATION.md`); that historical blocker no longer applies to the documented baseline command path. All configuration, documentation, and prior evidence are preserved and independently verifiable.
+**Current Execution Status**: The documented baseline command (`python -m assistant baseline`) runs the full regression on `test_counter` - 16/16 stages PASS, 95/95 checks, reproduced with byte-identical netlists. Milestone 1D added the approved `soc_ctrl` promotion inputs, a genuine 8/8 mapped-LEC proof, and a full physical run with honest failures (SS timing and stage-15 LVS gate); see the qualification table below. A Code Mode runtime shell integration issue was historically reported during Phases 14-17A and is documented only as historical context.
 
 **Evidence directories**: `D:\audit\phase14_automated_regression_20261112\`, `D:\audit\phase15_multidesign_validation_20261114\`, `D:\audit\phase16_execution_closure_20261114\`
 
@@ -49,8 +49,8 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 | **GDSII generation** | ✅ Configured | DEF→GDSII via KLayout tech-file reader options; Phase 14: successful generation |
 | **DRC** | ✅ Configured | Sky130 DRC deck, 295 rule categories; Phase 14: 0 actual violations (15 helper regions excluded) |
 | **LVS** | ✅ Configured | Official `sky130hd.lylvs`; Phase 14: genuine LVS PASS ("Congratulations! Netlists match.") |
-| **Automated regression** | ✅ Configured | 15-stage flow with acceptance checks; Phase 14: 88/88 checks passing |
-| **Reproducibility** | ✅ Verified (Phase 14) | Two runs A&B: 88/88 checks, 20/20 artefacts identical; GDSII geometry identical after timestamp stripping |
+| **Automated regression** | ✅ Configured | 15-stage flow with acceptance checks; Phase 14 (historical): 88/88 checks; current 2026-11-16 baseline: 95/95 (92 stage + 3 manifest) |
+| **Reproducibility** | ✅ Verified (Phase 14) | Two runs A&B (Phase 14, historical): 88/88 checks, 20/20 artefacts; current baseline: 95/95; GDSII geometry identical after timestamp stripping |
 | **Negative testing** | ✅ Verified (Phase 15) | N1–N7 all DETECTED; N7 fix: net swap in `15a_lvs_refcdl.tcl` |
 
 ### NOT implemented in this repository (do not claim)
@@ -70,18 +70,30 @@ These gaps are tracked in `docs/reviews/remediation-tracker.md` (findings J, K, 
 
 | Design | Capability | Phase | Result |
 |---|---|---|---|
-| **test_counter** | Full 15-stage regression PASS | 14 | REPRODUCIBLE: 88/88 checks, 20/20 artefacts identical |
+| **test_counter** | Full 15-stage regression PASS | 14 | REPRODUCIBLE (Phase 14, historical 88/88; current 2026-11-16 baseline 95/95), 20/20 artefacts identical |
 | **test_counter** | Generic LEC PASS | 14 | 6/6 compare points proven, RTL ≡ synthesized netlist |
 | **test_counter** | Technology-mapped LEC PASS | 14 | EQY, 3/3 partitions proven |
 | **test_counter** | DRC PASS | 13 | 295 categories, 0 actual violations |
 | **test_counter** | LVS PASS | 13 | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
 | **test_counter** | REPRODUCIBLE | 14 | Two runs A&B, 20/20 identical artefacts |
 | **soc_ctrl** | Framework configured | 15 | `-Design soc_ctrl` parameter operational; stage scripts design-aware |
-| **soc_ctrl** | RTL + SDC created | 15 | `examples/soc_ctrl/rtl/soc_ctrl.v` and `soc_ctrl.sdc` |
-| **soc_ctrl** | Full regression NOT executed | — | Not run in this pass; test_counter was used as the single reproducible baseline design (see `docs/reviews/remediation-report.md`) |
-| **soc_ctrl** | Do NOT claim DRC/LVS/STA/signoff | — | No DRC/LVS/STA evidence exists for soc_ctrl |
+| **soc_ctrl** | Canonical RTL + SDC tracked | 1D | `examples/soc_ctrl/rtl/soc_ctrl.v` (approved arithmetic correction, SHA `2a7e028d…`) and canonical 10 ns SDC (SHA `2a9126e7…`) are included in this release |
+| **soc_ctrl** | 10 ns timing configuration | 1D | Canonical SDC period 10.0 ns approved; `regression/configs/soc_ctrl_10ns.json` included as a reference artifact (not consumed by the runner until a separately approved wiring change) |
+| **soc_ctrl** | Generic + mapped LEC PASS | 1D | Genuine EQY 8/8 partitions proved with Sky130 HD; negative control rejected; no false PASS |
+| **soc_ctrl** | Full 15-stage physical flow | 1D | 14/16 stages PASS; DRC 0 violations; **STA FAIL at SS corner** (WNS -2.3378 ns, 3 violated paths); **stage-15 LVS FAIL as-run** (secondary comparator hard-codes `TOP = 'TEST_COUNTER'`; official KLayout verdict PASS). Full physical qualification is NOT claimed |
 
-**Important**: Abilities marked "Configured" have scripts in place with design-aware paths. Abilities marked "Verified" have evidence from actual Phase 14 test_counter runs. soc_ctrl abilities marked "NOT executed" have not been executed; the previously cited "shell blocker" no longer applies (the baseline command runs today for test_counter), but no soc_ctrl run was performed in this pass and none is claimed.
+**Important**: test_counter is fully qualified end-to-end. soc_ctrl has genuine equivalence evidence but is **not** physically qualified: SS timing is not closed and the LVS gate fails due to a tooling defect (fix deferred to a later milestone). Historical "shell blocker" references are context only. Publish evidence and failure details are in `docs/reviews/`.
+
+### Current qualification status (Milestone 1D, 2026-11-17)
+
+| Check | Result |
+|---|---|
+| test_counter full flow | **PASS** - 16/16 stages, 95/95 checks |
+| soc_ctrl mapped LEC (Sky130 HD, EQY) | **PASS** - 8/8 partitions, negative control rejected |
+| soc_ctrl STA | **FAIL** - SS setup WNS -2.3378 ns, TNS -4.0984, 3 violated paths (TT/FF clean) |
+| soc_ctrl DRC | **PASS** - 0 actual violations |
+| soc_ctrl LVS (gate as-run) | **FAIL** - secondary comparator hard-coded top name; official KLayout verdict PASS |
+| Publication / signoff | **NOT CLAIMED** - no full physical qualification for soc_ctrl |
 
 ---
 
@@ -294,7 +306,7 @@ The engineering workflow follows: agent → skill → inputs → EDA tool execut
 | 8 | GDSII: successful generation | test_counter | 9–13 | Via cut layers + net-name labels; 8 standard cells merged with genuine geometry |
 | 9 | DRC: 295 categories, zero violations | test_counter | 13 | 15 helper regions excluded from violation count; report database saved and reopened |
 | 10 | LVS: genuine Sky130 LVS PASS | test_counter | 13 | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
-| 11 | Automated regression: 88/88 acceptance checks | test_counter | 14 | Both runs A&B OVERALL PASS |
+| 11 | Automated regression: 88/88 acceptance checks (Phase 14 historical); current 95/95 | test_counter | 14 | Both runs A&B OVERALL PASS |
 | 12 | Reproducibility: 20/20 compared artifacts identical | test_counter | 14 | Bit-identical across runs A&B; GDSII geometry identical after timestamp stripping |
 | 13 | Negative testing: N1–N7 detected | test_counter | 15 | All 7 DETECTED independently; N7 fix: net swap in `15a_lvs_refcdl.tcl` |
 
@@ -338,11 +350,11 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1
 - SDC: `examples/test-counter/rtl/test_counter.sdc`
 - Top Module: `counter`
 - Artifact Prefix: `test_counter`
-- Baselined REPRODUCIBLE (Phase 14): 88/88 checks, 20/20 identical artefacts
+- Baselined REPRODUCIBLE (Phase 14, historical): 88/88 checks; current baseline 95/95; 20/20 identical artefacts
 
 **soc_ctrl**:
-- RTL: `examples/soc_ctrl/rtl/soc_ctrl.v` (synthesizable Verilog for 4-bit adder/controller)
-- SDC: `examples/soc_ctrl/rtl/soc_ctrl.sdc` (period 10.0 ns, 100 MHz assumptions)
+- RTL: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` is ABSENT from published commit 27b5d1c (untracked in preserved tree, SHA `7d3d6300…e752a`); do not claim it is present
+- SDC: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` is ABSENT from published commit 27b5d1c (untracked in preserved tree, SHA `2a9126e7…e644`)
 - Top Module: `soc_ctrl`
 - Artifact Prefix: `soc_ctrl`
 - Framework configured; full regression pending execution
@@ -477,7 +489,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 | **GDSII** | PASS | Geometry identical after timestamp stripping |
 | **DRC** | PASS | 0 actual violations (15 helper regions excluded) |
 | **LVS** | PASS | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
-| **Reproducibility** | REPRODUCIBLE | Two runs A&B: 88/88 checks, 20/20 artefacts identical |
+| **Reproducibility** | REPRODUCIBLE | Two runs A&B (Phase 14, historical): 88/88 checks; current baseline 95/95; 20/20 artefacts identical |
 
 **Evidence Location**: `D:\audit\phase14_automated_regression_20261112\evidence\`
 
@@ -486,8 +498,8 @@ $Resume = $true  # Skip completed stages; only run remaining
 **Status**: ⚙️ Integrated second design; full regression pending execution
 
 **Provenance**:
-- RTL source: `examples/soc_ctrl/rtl/soc_ctrl.v` (locally created for Phase 15 framework compatibility)
-- SDC constraints: `examples/soc_ctrl/rtl/soc_ctrl.sdc` (locally created for Phase 15 framework integration)
+- RTL source: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` NOT in published tree; only isolated candidate RTL under `examples/soc_ctrl/candidates/`
+- SDC constraints: canonical `soc_ctrl.sdc` NOT in published tree (10 ns intent documented, untracked; no approved config)
 - Original gate-level reference: `D:\tools\eda-work\soc_ctrl_stub.v` (OpenROAD EDA test suite)
 - Original SDC reference: `D:\tools\eda-work\soc_ctrl_stub.sdc` (OpenROAD EDA test suite)
 
@@ -505,7 +517,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 | **Max Transition** | 1.5 |
 | **Max Fanout** | 30 |
 
-**SDC Constraints** (`soc_ctrl.sdc`):
+**SDC Constraints** (canonical `soc_ctrl.sdc` absent from published tree; 10 ns proposal only):
 - `create_clock -name clk -period 10.0 [get_ports clk]`
 - `set_input_delay -clock clk 2.0 [all_inputs]`
 - `set_output_delay -clock clk 2.0 [all_outputs]`
@@ -534,8 +546,8 @@ $Resume = $true  # Skip completed stages; only run remaining
 **Distinguishing Local RTL from Upstream Source**:
 | File | Origin | Description |
 |---|---|---|
-| `examples/soc_ctrl/rtl/soc_ctrl.v` | Locally created | RTL Verilog created for Phase 15 framework compatibility; synthesizable Verilog for 4-bit adder/controller. Does NOT claim gate-level equivalence with `D:\tools\eda-work\soc_ctrl_stub.v`. |
-| `examples/soc_ctrl/rtl/soc_ctrl.sdc` | Locally created | SDC timing constraints created for Phase 15 framework integration. Period 10.0 ns, 100 MHz assumptions. |
+| `examples/soc_ctrl/rtl/soc_ctrl.v` | Absent from published 27b5d1c | Untracked in preserved tree only; not present in published repo |
+| `examples/soc_ctrl/rtl/soc_ctrl.sdc` | Absent from published 27b5d1c | Untracked in preserved tree only; not present in published repo |
 | `D:\tools\eda-work\soc_ctrl_stub.v` | Upstream source | Original gate-level netlist from OpenROAD EDA test suite, verified against Nangate Open Cell Library. Gate-level, not RTL. |
 | `D:\tools\eda-work\soc_ctrl_stub.sdc` | Upstream source | Original timing constraints from OpenROAD EDA test suite. |
 
@@ -606,8 +618,8 @@ vlsi-pd-staff-engineer/
 │   │   ├── rtl/test_counter.sdc
 │   │   └── test_framework.sh
 │   └── soc_ctrl/                          # 4-bit adder controller (Phase 15, NEW)
-│       ├── rtl/soc_ctrl.v                # SOC RTL (synthesizable Verilog)
-│       └── rtl/soc_ctrl.sdc              # SOC SDC (timing constraints)
+# NOTE: canonical rtl/soc_ctrl.v is ABSENT from published 27b5d1c
+# NOTE: canonical rtl/soc_ctrl.sdc is ABSENT from published 27b5d1c
 ├── run_regression.ps1                     # Primary entry point (-Design parameter)
 ├── checks/                                # Acceptance check logic
 │   ├── acceptance.py
@@ -656,7 +668,7 @@ vlsi-pd-staff-engineer/
 
 **Phase 14 test_counter — Fully Verified**:
 - Two independent runs (A & B) both OVERALL PASS
-- 88/88 acceptance checks passing per run
+- 88/88 acceptance checks passing per run (Phase 14 historical); current baseline 95/95
 - 20/20 artefacts compared: bit-identical
 - GDSII geometry identical after timestamp stripping
 - 28 cells synthesized, 0 DRV violations

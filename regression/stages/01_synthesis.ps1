@@ -61,7 +61,7 @@ hierarchy -check -top $Top
 synth -top $Top -flatten
 
 dfflibmap -liberty $Lib
-abc -liberty $Lib
+abc -liberty $Lib -dont_use sky130_fd_sc_hd__lpflow_*
 
 setundef -zero
 opt_clean -purge

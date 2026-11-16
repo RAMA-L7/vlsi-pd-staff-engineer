@@ -5,7 +5,7 @@
 ### Design 1: test_counter — Validated Baseline Design
 
 #### Status
-**Validated baseline** — Phase 14: REPRODUCIBLE classification (both runs A&B OVERALL PASS, 88/88 acceptance checks, 20/20 artefacts identical, GDSII geometry identical after timestamp stripping).
+**Validated baseline** — Phase 14: REPRODUCIBLE classification (both runs A&B OVERALL PASS, 88/88 acceptance checks (Phase 14 historical; current baseline 95/95), 20/20 artefacts identical, GDSII geometry identical after timestamp stripping).
 
 #### Provenance
 - **RTL Source**: `examples/test-counter/rtl/test_counter.v`
@@ -46,7 +46,7 @@
 | **GDSII** | PASS | Geometry identical after timestamp stripping |
 | **DRC** | PASS | 0 actual violations (15 helper regions excluded) |
 | **LVS** | PASS | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
-| **Reproducibility** | REPRODUCIBLE | Two runs A&B: 88/88 checks, 20/20 artefacts identical |
+| **Reproducibility** | REPRODUCIBLE | Two runs A&B (Phase 14, historical): 88/88 checks; current baseline 95/95; 20/20 artefacts identical |
 
 #### Evidence Location
 - `D:\audit\phase14_automated_regression_20261112\evidence\`
@@ -101,8 +101,8 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 **Do NOT claim**: DRC, LVS, or timing signoff for soc_ctrl. Full regression was not executed for soc_ctrl in this pass (the historically reported Code Mode shell blocker no longer applies to the baseline command path, which runs test_counter).
 
 #### Provenance
-- **RTL Source**: `examples/soc_ctrl/rtl/soc_ctrl.v` (locally created for framework integration)
-- **SDC Source**: `examples/soc_ctrl/rtl/soc_ctrl.sdc` (locally created for framework integration)
+- **RTL Source**: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` ABSENT from published tree (untracked in preserved tree only)
+- **SDC Source**: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` ABSENT from published tree (untracked in preserved tree only)
 - **Original Gate-Level Reference**: `D:\tools\eda-work\soc_ctrl_stub.v` (OpenROAD EDA test suite, verified against Nangate Open Cell Library)
 - **Original SDC Reference**: `D:\tools\eda-work\soc_ctrl_stub.sdc` (OpenROAD EDA test suite)
 
@@ -123,7 +123,7 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 | **Max Transition** | 1.5 |
 | **Max Fanout** | 30 |
 
-#### RTL Source (`examples/soc_ctrl/rtl/soc_ctrl.v`)
+#### RTL Source — canonical ABSENT from published tree (`examples/soc_ctrl/rtl/soc_ctrl.v`)
 ```verilog
 module soc_ctrl (
     input clk,
@@ -143,7 +143,7 @@ endmodule
 
 **Do NOT claim**: Gate-level equivalence with `D:\tools\eda-work\soc_ctrl_stub.v`. This is a framework adaptation for RTL-to-GDSII flow compatibility.
 
-#### SDC Constraints (`examples/soc_ctrl/rtl/soc_ctrl.sdc`)
+#### SDC Constraints — canonical ABSENT from published tree (`examples/soc_ctrl/rtl/soc_ctrl.sdc`)
 ```tcl
 # Timing constraints for soc_ctrl design
 create_clock -name clk -period 10.0 [get_ports clk]
@@ -184,8 +184,8 @@ set_max_fanout 30 [current_design]
 #### Distinguishing Local RTL from Upstream Source
 | File | Origin | Description |
 |---|---|---|
-| `examples/soc_ctrl/rtl/soc_ctrl.v` | Locally created | RTL Verilog created for Phase 15 framework compatibility; synthesizable Verilog for 4-bit adder/controller. Does NOT claim gate-level equivalence with `D:\tools\eda-work\soc_ctrl_stub.v`. |
-| `examples/soc_ctrl/rtl/soc_ctrl.sdc` | Locally created | SDC timing constraints created for Phase 15 framework integration. Period 10.0 ns, 100 MHz assumptions. |
+| `examples/soc_ctrl/rtl/soc_ctrl.v` | Absent from published 27b5d1c | Untracked in preserved tree only |
+| `examples/soc_ctrl/rtl/soc_ctrl.sdc` | Absent from published 27b5d1c | Untracked in preserved tree only |
 | `D:\tools\eda-work\soc_ctrl_stub.v` | Upstream source | Original gate-level netlist from OpenROAD EDA test suite, verified against Nangate Open Cell Library. Gate-level, not RTL. |
 | `D:\tools\eda-work\soc_ctrl_stub.sdc` | Upstream source | Original timing constraints from OpenROAD EDA test suite. |
 
@@ -200,8 +200,8 @@ set_max_fanout 30 [current_design]
 ```powershell
 $DesignConfig = @{
   soc_ctrl = @{
-    Rtl       = "examples/soc_ctrl/rtl/soc_ctrl.v"
-    Sdc       = "examples/soc_ctrl/rtl/soc_ctrl.sdc"
+    Rtl       = "examples/soc_ctrl/rtl/soc_ctrl.v"  # canonical ABSENT from published 27b5d1c
+    Sdc       = "examples/soc_ctrl/rtl/soc_ctrl.sdc"  # canonical ABSENT from published 27b5d1c
     ArtPrefix = "soc_ctrl"
     LibDir    = $LibDir
     LibTT     = "$LibDir/sky130_fd_sc_hd__tt_025C_1v80.lib"
@@ -256,7 +256,7 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 - **Separate workspaces** with independent evidence directories
 
 ### Next Steps (When Shell Recovered)
-1. **test_counter regression**: `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter`; verify REPRODUCIBLE baseline (88/88 checks, 20/20 artefacts identical)
+1. **test_counter regression**: `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter`; verify REPRODUCIBLE baseline (Phase 14 historical 88/88; current baseline 95/95; 20/20 artefacts identical)
 2. **soc_ctrl regression**: `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl`; validate all 15 stages (configuration only; no DRC/LVS/STA claims)
 3. **Git commit and push** to remote: `git push origin feature/F-01-claude-agent-discovery`
 4. **Verify remote publication** on `RAMA-L7/vlsi-pd-staff-engineer`

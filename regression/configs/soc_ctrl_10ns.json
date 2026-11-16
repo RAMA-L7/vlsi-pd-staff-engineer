@@ -1,0 +1,62 @@
+{
+  "_STATUS": {
+    "decision": "APPROVED VALUE 10 ns",
+    "application": "PROPOSAL NOT APPLIED - this file is an evidence-dir proposal only. It has NOT been committed, published, or copied into any repository. Tracking/publication requires the normal repository change-control steps.",
+    "workstream": "Milestone 1C workstream 4 - establish authoritative 10 ns constraint/config source",
+    "generated": "2026-11-16",
+    "authority_statement": "The canonical soc_ctrl SDC (SHA-256 2a9126e716f834f255fe358aa8962ae619ffec50418e1104690a49eda47be644) is the authoritative constraint source. This config is a design-specific wrapper that points to it; it does not override the SDC. The 7.0 ns period in the published config is NOT approved."
+  },
+
+  "project": "example_soc_subsystem",
+  "top_module": "soc_ctrl",
+
+  "clock": {
+    "name": "clk",
+    "period_ns": 10.0,
+    "uncertainty_ns": 0.3,
+    "_uncertainty_reconciliation": {
+      "status": "DECLARED - source-of-truth discrepancy not yet resolved under change control",
+      "detail": "The canonical SDC contains NO set_clock_uncertainty command. The value 0.3 ns is carried over from the published config (synthesis_targets.json line 8) as a DECLARED value only; it is not asserted by the authoritative SDC. Before this config is published, uncertainty must be either (a) added explicitly to the tracked SDC, or (b) explicitly waived/recorded in the approval record. Uncertainty does not alter the approved 10.0 ns clock period.",
+      "sdc_declares_uncertainty": false
+    }
+  },
+
+  "constraints": {
+    "sdc_file": "examples/soc_ctrl/rtl/soc_ctrl.sdc",
+    "sdc_sha256": "2a9126e716f834f255fe358aa8962ae619ffec50418e1104690a49eda47be644",
+    "_sdc_file_note": "Points to the tracked canonical repository path (repo-relative). This replaces the published config's dangling reference 'constraints/design.sdc', which does not exist in D:\\audit\\mq_pd_20261116 or in D:\\audit\\repo. The canonical SDC is currently UNTRACKED in the repo (?? examples/soc_ctrl/rtl/); committing it under change control is a prerequisite for this path to become a truly tracked authoritative source.",
+    "upf_file": null
+  },
+
+  "targets": {
+    "wns_ns": 0.0,
+    "tns_ns": 0.0,
+    "max_transition_ns": 1.5,
+    "max_fanout": 30,
+    "_fanout_transition_alignment": {
+      "status": "ALIGNED TO CANONICAL SDC",
+      "canonical_sdc_values": {
+        "set_max_transition": 1.5,
+        "set_max_fanout": 30
+      },
+      "published_config_values_not_applied": {
+        "max_transition_ns": 0.7,
+        "max_fanout": 20
+      },
+      "detail": "Transition and fanout are aligned to the authoritative SDC lines 18-19 (set_max_transition 1.5, set_max_fanout 30). The published config's stricter 0.7 ns / 20 values are NOT applied by this proposal; any divergence must be resolved in the SDC under change control."
+    }
+  },
+
+  "_comparison_to_published_config": {
+    "published_file": "D:\\audit\\mq_pd_20261116\\synthesis_targets.json",
+    "published_sha256": "0ad1e5d650ffcfcb2f3b0cf839b0df15dacbcff72721a4917aad273987119ebe",
+    "differences": [
+      "top_module: 'datapath_design' -> 'soc_ctrl'",
+      "clock.period_ns: 7.0 (NOT APPROVED) -> 10.0 (APPROVED)",
+      "constraints.sdc_file: 'constraints/design.sdc' (dangling) -> 'examples/soc_ctrl/rtl/soc_ctrl.sdc' (canonical tracked path)",
+      "targets.max_transition_ns: 0.7 -> 1.5 (aligned to canonical SDC)",
+      "targets.max_fanout: 20 -> 30 (aligned to canonical SDC)",
+      "clock.uncertainty_ns: 0.3 retained but DECLARED as not present in the canonical SDC"
+    ]
+  }
+}

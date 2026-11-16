@@ -200,7 +200,7 @@ Missing any item = handoff is incomplete = next stage cannot start.
   - Negative control correctly rejects non-equivalent netlists
   - Full-circle check (check 7) catches accumulated errors across all stages
   - Net swap detection (N7 test: injection into `15a_lvs_refcdl.tcl`; LVS reports mismatch DETECTED)
-- **Validated Results (Phase 14)**: 88/88 checks include LEC; both runs PASS; technology-mapped LEC PASS with EQY + official Sky130 HD preprocessor; negative control correctly rejected
+- **Validated Results (Phase 14, historical)**: 88/88 checks include LEC; current baseline 95/95; both runs PASS; technology-mapped LEC PASS with EQY + official Sky130 HD preprocessor; negative control correctly rejected
 - **N7 Fix Verification**: Net swap injected into `15a_lvs_refcdl.tcl`; LVS reports mismatch (DETECTED) ✅
 
 #### `low-power-verifier`
@@ -322,7 +322,7 @@ Framework supports two independently configured designs:
 | Design | RTL Source | SDC | Top Module | Artifact Prefix | Status |
 |---|---|---|---|---|---|
 | **test_counter** | `examples/test-counter/rtl/test_counter.v` | `examples/test-counter/rtl/test_counter.sdc` | counter | `test_counter` | ✅ Validated (Phase 14: REPRODUCIBLE) |
-| **soc_ctrl** | `examples/soc_ctrl/rtl/soc_ctrl.v` | `examples/soc_ctrl/rtl/soc_ctrl.sdc` | soc_ctrl | `soc_ctrl` | ⚙️ Integrated; full regression not executed in this pass (baseline path works for test_counter) |
+| **soc_ctrl** | (canonical RTL/SDC ABSENT from 27b5d1c) | (ABSENT) | soc_ctrl | soc_ctrl | ⛔ BLOCKED — inputs not in published tree; only isolated candidates present |
 
 **Design Config** (`$DesignConfig` hashtable in `run_regression.ps1`) maps each design name to:
 
@@ -633,7 +633,7 @@ Regression Continuation (if all stages pass) or Escalation
 
 | Phase | Architecture Change | Status |
 |---|---|---|
-| **14** | Initial 15-stage flow; `run_regression.ps1`; acceptance checks (88/88); negative tests N1–N7; REPRODUCIBLE classification | ✅ Complete |
+| **14** | Initial 15-stage flow; `run_regression.ps1`; acceptance checks (88/88 Phase 14 historical; current 95/95); negative tests N1–N7; REPRODUCIBLE classification | ✅ Complete |
 | **15** | `-Design` parameter added to `run_regression.ps1`; `$DesignConfig` hashtable; `01_synthesis.ps1` design-aware via `$Top`; soc_ctrl RTL + SDC created; N7 injection fix (target `15a_lvs_refcdl.tcl`) | ✅ Complete |
 | **16** | Shell failure fully diagnosed; all framework modifications documented; GitHub publication procedures prepared; 7 reports created | ✅ Complete |
 | **17B** | Professional README rewritten; ARCHITECTURE.md created; all 9 agents documented with full responsibilities; all 10 skills documented with execution procedures; REGRESSION.md created; VALIDATION.md created with Phase 1–17 milestones; DESIGN.md created with test_counter + soc_ctrl; .gitige review; GitHub publication preparation | ✅ In Progress |

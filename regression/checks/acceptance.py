@@ -59,19 +59,23 @@ def detect_design():
 DESIGN = detect_design()
 
 
-def check(stage, name, ok, detail=''):
-    status = 'PASS' if ok else 'FAIL'
+def record(stage, name, status, detail=''):
+    """Record one machine-readable check (PASS/FAIL/INCONCLUSIVE/NOT_TESTED)."""
     RESULTS.append({'stage': stage, 'name': name, 'status': status,
                     'detail': str(detail)})
     print('CHECK %s %s %s %s' % (stage, name, status, detail))
+    return status
+
+
+def check(stage, name, ok, detail=''):
+    status = 'PASS' if ok else 'FAIL'
+    record(stage, name, status, detail)
     return ok
 
 
 def skip(stage, name, detail='stage not executed'):
     """A stage that was not executed is NOT_TESTED - never PASS."""
-    RESULTS.append({'stage': stage, 'name': name, 'status': 'NOT_TESTED',
-                    'detail': str(detail)})
-    print('CHECK %s %s NOT_TESTED %s' % (stage, name, detail))
+    record(stage, name, 'NOT_TESTED', detail)
 
 
 def exists(path, min_size=1):
@@ -83,6 +87,128 @@ def exists(path, min_size=1):
 
 def grep(path, pattern, flags=re.M):
     return re.findall(pattern, read(path), flags)
+
+
+# --- BEGIN PARTITION GATE HELPERS (fix for all_partitions_proved false-PASS) ---
+# Original defective logic (acceptance.py:253-254):
+#   npart = len(re.findall('Successfully proved equivalence of partition', log))
+#   check(S, 'all_partitions_proved', npart > 0, '%d partitions proved' % npart)
+# That returns PASS for ANY non-zero subset (e.g. 5 of 8).  The corrected gate
+# requires an authoritative expected partition set and a complete proof of it.
+
+PARTITION_SUMMARY_RE = re.compile(r'Failed to prove equivalence for (\d+)/(\d+) partitions')
+PROVED_RE = re.compile(r'Successfully proved equivalence of partition\s+(\S+)')
+FAILED_RE = re.compile(r'Failed to prove equivalence of partition\s+(\S+)')
+COULD_NOT_RE = re.compile(r"Could not prove equivalence of partition\s+'([^']+)'")
+FAIL_FOOTER_RE = re.compile(r'DONE \(FAIL, rc=\d+\)')
+UNKNOWN_MARKERS = ('equivalence unknown', 'partitions not equivalent',
+                   'bmc failed', 'unproven', 'timed out')
+
+
+def expected_partition_names(run):
+    """Authoritative expected partition-name set, or None if unknowable.
+
+    Sources in priority order:
+      1. REG_EXPECTED_PARTITIONS - explicit comma/space separated name list.
+      2. <run>/eqy/expected_partitions.json - explicit JSON list or
+         {"partitions": [...]} / {"expected_partitions": [...]}.
+      3. <run>/eqy/work/partition.list - EQY-generated authoritative list
+         (format: "<top> <partition> xbits : <port>").
+    None -> the gate reports INCONCLUSIVE, never PASS.
+    """
+    raw = os.environ.get('REG_EXPECTED_PARTITIONS', '').strip()
+    if raw:
+        names = set(x for x in re.split(r'[,\s]+', raw) if x)
+        if names:
+            return names
+
+    jp = os.path.join(run, 'eqy', 'expected_partitions.json')
+    if exists(jp):
+        try:
+            data = json.loads(read(jp))
+            if isinstance(data, dict):
+                data = data.get('partitions') or data.get('expected_partitions') or []
+            names = set(str(x) for x in data if str(x))
+            if names:
+                return names
+        except Exception:
+            pass
+
+    pl = os.path.join(run, 'eqy', 'work', 'partition.list')
+    if exists(pl):
+        names = set()
+        for line in read(pl).splitlines():
+            toks = line.split()
+            if not toks:
+                continue
+            if len(toks) >= 2 and '.' in toks[1]:
+                names.add(toks[1])          # EQY: "top part xbits : port"
+            elif len(toks) == 1:
+                names.add(toks[0])          # simple one-name-per-line list
+        if names:
+            return names
+    return None
+
+
+def partition_evidence(log_text):
+    text = log_text or ''
+    lower = text.lower()
+    return {
+        'proved': set(PROVED_RE.findall(text)),
+        'failed': set(FAILED_RE.findall(text)),
+        'could_not': set(COULD_NOT_RE.findall(text)),
+        'unknown_markers': [m for m in UNKNOWN_MARKERS if m in lower],
+        'summary': PARTITION_SUMMARY_RE.findall(text),
+        'footer_fail': bool(FAIL_FOOTER_RE.search(text)),
+        'designs_ok': 'Successfully proved designs equivalent' in text,
+    }
+
+
+def evaluate_partition_proof(run, log_text):
+    """Return (status, detail); status in PASS / FAIL / INCONCLUSIVE.
+
+    PASS only when the expected set is known AND every expected partition was
+    proved AND there are zero failed / unknown / unproven markers.  Missing,
+    extra, failed or unknown partitions -> FAIL; unknown expected set ->
+    INCONCLUSIVE.  Never returns PASS for a partial proof.
+    """
+    ev = partition_evidence(log_text)
+    expected = expected_partition_names(run)
+    proved = ev['proved']
+    problems = []
+
+    if ev['failed']:
+        problems.append('failed=%s' % sorted(ev['failed']))
+    if ev['could_not']:
+        problems.append('could_not_prove=%s' % sorted(ev['could_not']))
+    if ev['unknown_markers']:
+        problems.append('unknown_markers=%s' % ev['unknown_markers'])
+    if ev['footer_fail']:
+        problems.append('footer=DONE(FAIL)')
+    if ev['summary'] and ev['summary'][-1][0] != '0':
+        problems.append('summary_failed=%s/%s' % ev['summary'][-1])
+
+    if expected is None:
+        return ('INCONCLUSIVE',
+                'expected partition set unknown; proved=%d%s'
+                % (len(proved), ('; ' + '; '.join(problems)) if problems else ''))
+
+    missing = expected - proved
+    extra = proved - expected
+    if missing:
+        problems.append('missing=%s' % sorted(missing))
+    if extra:
+        problems.append('unexpected=%s' % sorted(extra))
+    if len(proved) != len(expected):
+        problems.append('count=%d/%d' % (len(proved), len(expected)))
+
+    if problems:
+        return ('FAIL', 'proof incomplete: ' + '; '.join(problems))
+    if not ev['designs_ok']:
+        return ('FAIL', 'all %d partitions proved but EQY final verdict missing' % len(proved))
+    return ('PASS', '%d/%d partitions proved; zero failed/unknown/unproven'
+            % (len(proved), len(expected)))
+# --- END PARTITION GATE HELPERS ---
 
 
 # Stage-specific log locations (Windows stages write to different dirs)
@@ -250,11 +376,16 @@ else:
     check(S, 'official_preprocessor_used',
           exists(eq + '/formal_pdk.v'),
           'formal_pdk.v was produced by the official formal_pdk_proc.py')
-    npart = len(re.findall(r'Successfully proved equivalence of partition', read(eqpos)))
-    check(S, 'all_partitions_proved', npart > 0, '%d partitions proved' % npart)
+    # Corrected: a non-zero subset is NOT a proof of all partitions.
+    pstatus, pdetail = evaluate_partition_proof(RUN, read(eqpos))
+    record(S, 'all_partitions_proved', pstatus, pdetail)
+    # Strengthened: presence of the success verdict alone is not enough when a
+    # log also contains explicit failure markers (residual weakness reported).
+    eqev = partition_evidence(read(eqpos))
     check(S, 'designs_equivalent',
-          'Successfully proved designs equivalent' in read(eqpos),
-          'EQY final verdict')
+          eqev['designs_ok'] and not eqev['footer_fail'] and not eqev['failed']
+          and not eqev['could_not'] and not eqev['unknown_markers'],
+          'EQY final verdict with no contradicting failure markers')
     check(S, 'negative_control_rejected',
           'Could not prove equivalence' in read(eqneg),
           'the corrupted netlist was rejected by EQY')
@@ -578,9 +709,13 @@ else:
 # ===================================================================== output
 npass = len([r for r in RESULTS if r['status'] == 'PASS'])
 nfail = len([r for r in RESULTS if r['status'] == 'FAIL'])
+nincon = len([r for r in RESULTS if r['status'] == 'INCONCLUSIVE'])
 nskip = len([r for r in RESULTS if r['status'] == 'NOT_TESTED'])
 print('')
 print('ACCEPTANCE: %d passed, %d failed, %d not tested, %d total' % (npass, nfail, nskip, len(RESULTS)))
+if nincon:
+    print('ACCEPTANCE_INCONCLUSIVE: %d (counts as failure for the exit code)' % nincon)
 with open(RUN + '/acceptance.json', 'w') as f:
-    json.dump({'checks': RESULTS, 'passed': npass, 'failed': nfail, 'not_tested': nskip, 'total': len(RESULTS), 'design': DESIGN}, f, indent=2)
-sys.exit(0 if nfail == 0 else 1)
+    json.dump({'checks': RESULTS, 'passed': npass, 'failed': nfail, 'inconclusive': nincon,
+               'not_tested': nskip, 'total': len(RESULTS), 'design': DESIGN}, f, indent=2)
+sys.exit(0 if (nfail == 0 and nincon == 0) else 1)
