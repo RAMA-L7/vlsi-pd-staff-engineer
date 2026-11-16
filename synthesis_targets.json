@@ -10,24 +10,25 @@
 
   "corners": {
     "func_ss": {
-      "pvt": "SS / 0.9V / 125°C",
+      "pvt": "SS / 1.60V / 100C",
       "lib": "sky130_fd_sc_hd__ss_100C_1v60.lib",
       "purpose": "setup_worst",
       "available": false,
-      "note": "Sky130 open PDK only ships TT. Flag as risk."
+      "note": "Local file availability: this .lib is NOT present in the local tool tree. This is NOT a claim about published PDK corners - the public Sky130 PDK publishes slow corners (ss_*); the local regression tree currently ships tt_025C_1v80, ss_n40C_1v40 and ff_n40C_1v95. See assistant/pins.json for the exact local files and hashes."
     },
     "func_tt": {
-      "pvt": "TT / 1.0V / 25°C",
+      "pvt": "TT / 1.80V / 25C",
       "lib": "sky130_fd_sc_hd__tt_025C_1v80.lib",
       "purpose": "nominal",
-      "available": true
+      "available": true,
+      "note": "Local file present: tt_025C_1v80 = 25C / 1.80V per Liberty operating_conditions header."
     },
     "func_ff": {
-      "pvt": "FF / 1.1V / -40°C",
+      "pvt": "FF / 1.95V / -40C",
       "lib": "sky130_fd_sc_hd__ff_n40C_1v95.lib",
       "purpose": "hold_worst",
-      "available": false,
-      "note": "Sky130 open PDK only ships TT. Flag as risk."
+      "available": true,
+      "note": "Local file present: ff_n40C_1v95 = -40C / 1.95V per Liberty operating_conditions header."
     }
   },
 
@@ -53,9 +54,10 @@
 
   "optimization_preferences": {
     "priority_order": ["timing", "area", "power"],
-    "allow_pipelining": true,
-    "max_latency_increase_cycles": 1,
-    "allow_retiming": true,
-    "max_iterations": 5
+    "allow_pipelining": false,
+    "max_latency_increase_cycles": 0,
+    "allow_retiming": false,
+    "max_iterations": 5,
+    "latency_policy": "Preserve interface latency and cycle behavior by default. Any change to RTL behavior, interface latency, clock definitions, timing exceptions, power intent or verification exclusions requires explicit architectural authorization recorded before the change (see assistant/eco.py)."
   }
 }

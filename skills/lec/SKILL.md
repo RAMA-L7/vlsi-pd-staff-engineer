@@ -436,7 +436,37 @@ LEC REPORT:
 
 ---
 
-## 7. Anti-Patterns
+## 7. Exclusions and Waivers (hard rules)
+
+These rules are mandatory and are enforced by the gate controller
+(`assistant/controller.py`): a proof failure can never be silently
+converted into a pass.
+
+```
+1. Exclusions are NEVER automatic. There is no default dont-verify,
+   no "assume equivalent" and no blanket black-box for cells that
+   the design actually contains.
+2. Every exclusion must be EXPLICIT: name the exact compare points
+   or instances it covers - no wildcards over whole modules.
+3. Every exclusion must be SCOPED: it applies to one named gate /
+   checkpoint, not globally, and it expires when any input hash
+   (RTL, constraints, library, PDK) changes.
+4. Every exclusion must be RECORDED in the evidence with: scope,
+   reason, who approved it, and what independent coverage check
+   substitutes for the excluded comparison (e.g. simulation of the
+   excluded crossings, structural checks, UPF-aware LEC).
+5. Proof failures are not waivable without that independent
+   coverage. If the substitute check cannot be run, the gate stays
+   BLOCKED / INCONCLUSIVE - it does not pass.
+6. Added registers, clock-gating cells and isolation cells are
+   INVESTIGATE-FIRST: prove they are tool-inserted and that their
+   enable/control logic matches the original before any point is
+   excluded. "Structurally required" is a hypothesis until checked.
+```
+
+---
+
+## 8. Anti-Patterns
 
 ```
 ❌ "LEC passed once after synthesis, we're good for tapeout"
@@ -470,7 +500,7 @@ LEC REPORT:
 
 ---
 
-## 8. Escalation
+## 9. Escalation
 
 ```
 ESCALATE TO SYNTHESIS AGENT WHEN:
@@ -495,7 +525,7 @@ ESCALATE FORMAT:
 
 ---
 
-## 9. Integration With Other Agents
+## 10. Integration With Other Agents
 
 ```
 UPSTREAM:

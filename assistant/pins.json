@@ -1,0 +1,66 @@
+{
+  "recorded_utc": "2026-11-16T00:00:00Z",
+  "recorded_by": "assistant.tools.default_provenance (manual snapshot at remediation start)",
+  "note": "Pins recorded from the actual host. Tools without a reliable batch version flag are pinned by binary SHA-256. Probes re-run these at baseline time; mismatches are reported, never silently accepted.",
+  "tools": [
+    {
+      "name": "yosys",
+      "version": "Yosys 0.69+154 (git sha1 30d62572e-dirty, Release, GNU /usr/bin/x86_64-w64-mingw32-g++ 15.2.1)",
+      "path": "D:/tools/oss-cad-suite/bin/yosys.exe",
+      "invocation": "cmd /c \"call D:\\tools\\oss-cad-suite\\environment.bat && yosys -V\"",
+      "notes": "direct exe start fails with missing-DLL (0xC0000135); environment.bat required"
+    },
+    {
+      "name": "eqy",
+      "version": "EQY v0.69-1-g7a92d84",
+      "path": "D:/tools/oss-cad-suite/bin/eqy.exe"
+    },
+    {
+      "name": "yosys_wsl",
+      "version": "Yosys 0.33 (git sha1 2584903a060)",
+      "path": "/usr/bin/yosys (WSL Ubuntu-24.04)",
+      "notes": "used by examples/test-counter/test_framework.sh"
+    },
+    {
+      "name": "openroad",
+      "version": "bazel-nostamp",
+      "path": "/usr/local/bin/openroad (WSL Ubuntu-24.04)",
+      "notes": "no release string; flow pinned by ORFS commit instead"
+    },
+    {
+      "name": "klayout",
+      "version": "KLayout 0.30.13",
+      "path": "/mnt/d/tools/KLayout/bin/klayout.sh (WSL)"
+    },
+    {
+      "name": "netgen",
+      "version": "<no batch version flag; pinned by binary sha256>",
+      "path": "/mnt/d/tools/netgen/bin/netgen (WSL)",
+      "sha256": "919231b205846978ec72f9f664252f9a6d5c4be8306ff6c75bab6092fcd4aaac"
+    }
+  ],
+  "flow": {
+    "name": "OpenROAD-flow-scripts",
+    "path": "D:/rta-real-world-benchmark/02_projects/OpenROAD-flow-scripts",
+    "commit": "25b6429c1644a8682852646bebf19ff164402c76",
+    "dirty": true,
+    "dirty_files": [" M flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"]
+  },
+  "pdk": {
+    "name": "sky130_fd_sc_hd",
+    "path": "D:/tools/pdk/skywater-pdk-complete/skywater-pdk-libs-sky130_fd_sc_hd",
+    "commit": "ac7fb61f06e6470b94e8afdf7c25268f62fbd7b1"
+  },
+  "libraries": {
+    "sky130_fd_sc_hd__tt_025C_1v80.lib": "92eb4e93a3d4c2563018ac81cdec2f02fdeaced9b39337ed5c141fa63e0ad8f8",
+    "sky130_fd_sc_hd__ss_n40C_1v40.lib": "bbc8d07174ef50a2734607df0ea0d1c64236f32d2e0bd4cb55a3a4640204ff46",
+    "sky130_fd_sc_hd__ff_n40C_1v95.lib": "3924c861014075fd5bcd9807317a895bf39419a86213154e02818d0d629f9336"
+  },
+  "platforms": {
+    "flow/platforms/sky130hd/lef/sky130_fd_sc_hd_merged.lef": "1846913989364748783c84c828d5dbc2168d7b2e0f29debcc58c29711c716a1e"
+  },
+  "design_inputs": {
+    "examples/test-counter/rtl/test_counter.v": "b5a84c11b812f8f08f5ac7060e17b8469bc3bf98cafdf9f03e673522199fd7a6",
+    "examples/test-counter/rtl/test_counter.sdc": "b36b66ba0ba549f8cc1a81b34f2ff91025197e590250a5df875cebba842407c6"
+  }
+}

@@ -471,6 +471,15 @@ BOTTLENECK IDENTIFICATION:
   ALWAYS try restructuring before pipelining.
   ALWAYS try upsizing before replication.
   Cheapest fix first.
+
+  AUTHORIZATION (hard rule): pipelining and retiming change interface
+  latency / cycle behavior. They are RESTRICTED change classes
+  (interface_latency, rtl_behavior) and must NOT be applied by default -
+  synthesis_targets.json sets allow_pipelining=false and
+  allow_retiming=false. Applying them requires explicit architectural
+  authorization recorded BEFORE the change (see assistant/eco.py
+  Authorization), with the new latency documented and re-verified at
+  every downstream gate.
 ```
 
 ### RTL-Level vs Gate-Level Optimization

@@ -136,6 +136,15 @@ COMMON BUGS CAUGHT AT THIS STAGE:
 After synthesis, verify that the tool inserted the correct cells.
 
 ```
+COUNT-BASED CHECKS ARE HEURISTICS (finding L):
+  Cell-count parity ("N expected, M found") is a RULE OF THUMB, never a
+  verdict on its own. Equal counts do NOT prove correctness - the cells
+  could be attached to the wrong nets, wrong domain, wrong strategy or
+  wrong direction. A PASS verdict requires the connectivity/domain/
+  strategy verifications listed below, recorded as evidence with the
+  netlist hash; if only counts are available the verdict is
+  INCONCLUSIVE, not PASS.
+
 POST-SYNTHESIS LOW POWER CHECKS:
   □ ISOLATION CELLS:
     For each isolation strategy in UPF:

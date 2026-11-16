@@ -46,7 +46,9 @@ OUTPUTS (handoff package):
 ## 2. Die Sizing
 
 ```
-UTILIZATION TARGETS (Sky130 guidance):
+UTILIZATION TARGETS (Sky130 guidance - HEURISTIC starting points,
+finding M: not fixed laws; always re-validate against THIS design's
+synthesis area, macro count, pin density and routing demand):
   No macros:     65-75% utilization target
   With macros:   55-65% utilization target (macros eat routing resources)
   High-perf:     50-60% (need routing room for buffers + shielding)
@@ -97,7 +99,10 @@ MACRO PLACEMENT PRINCIPLES:
      creates long wires that blow timing.
 
   2. CHANNEL WIDTH
-     Leave routing channels between macros:
+     Leave routing channels between macros (these micron numbers are
+     HEURISTIC starting points, finding M - validate against this
+     design's layer pitch, bus widths and router DRC rules; a channel
+     that passes this estimate can still starve on real congestion):
        Minimum: 20μm between macros (Sky130)
        Preferred: 40μm for high-fanout buses
        Between macro and core boundary: 10μm minimum
@@ -116,6 +121,9 @@ MACRO PLACEMENT PRINCIPLES:
   4. HALO / KEEPOUT
      Add placement halos around macros to prevent std cells
      from being placed too close (causes DRC and congestion):
+     (halo size 5um is a heuristic starting point, finding M - size it
+      from this design's pin-access and via requirements, not from this
+      default)
        set_macro_halo -halo_x 5 -halo_y 5  ;# μm, Sky130
 
   5. BLOCKAGES

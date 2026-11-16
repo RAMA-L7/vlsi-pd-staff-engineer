@@ -304,16 +304,23 @@ AFTER EVERY FIX:
 ## 3. The Three-Fix Rule
 
 ```
-RULE: If 3 targeted ECOs on the same failure do not resolve it
-(or each fix reveals a new problem), the issue is NOT at the
-level you're fixing. It's structural.
+RULE (investigation heuristic, NOT a law): If 3 targeted ECOs on the
+same failure do not resolve it (or each fix reveals a new problem),
+STOP and REASSESS - re-examine hypotheses, inputs, constraints and the
+protected metric definitions before any further attempt. The evidence
+does NOT automatically mean the problem is upstream: "upstream" is one
+hypothesis among several (others: wrong constraint, wrong library view,
+stale input, mis-measured metric, genuinely hard path) and must be
+tested like any other.
 
   ECO 1: buffer insertion → slack improved 200ps, still negative
   ECO 2: cell upsizing   → slack improved 100ps, still -150ps
   ECO 3: net rerouting    → slack improved  50ps, still -100ps
          ↓
-  PATTERN: diminishing returns. Each fix helps less.
-  DIAGNOSIS: the problem is upstream of routing.
+  PATTERN (observation): diminishing returns. Each fix helps less.
+  REQUIRED ACTION: reassessment. "Upstream/structural" is a HYPOTHESIS
+  until a discriminating test (diff inputs/constraints/library hashes,
+  inspect worst path, verify metric definition) confirms it.
 
 WHAT TO DO:
 
@@ -341,6 +348,12 @@ WHAT TO DO:
      Option A: Move macro X (re-run from placement) — 2hr, medium risk
      Option B: Increase die area 10% (re-run from floorplan) — 4hr, low risk
      Option C: Pipeline critical path in RTL (+1 cycle) — 6hr, lowest risk
+
+   NOTE: Option C changes interface latency (+1 cycle). It is a
+   RESTRICTED change class (interface_latency) and may only be taken
+   after explicit architectural authorization is recorded (reason,
+   scope, approver) - never autonomously. The effort/risk figures
+   above are HEURISTIC estimates, not measured values.
 
    My recommendation: Option <X> because <reasoning>.
    Awaiting decision."

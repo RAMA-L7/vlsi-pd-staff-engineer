@@ -1,1 +1,6 @@
+# Shell scripts and hooks must be LF in the worktree: CRLF makes bash fail
+# immediately with "$'\r': command not found" on a fresh Windows clone
+# (finding B/EOL regression guard; see tests/test_foundation.py).
+*.sh text eol=lf
+hooks/session-start text eol=lf
 workspace/scripts/bash/verify_repo.sh text eol=lf

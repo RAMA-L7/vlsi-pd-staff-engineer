@@ -129,15 +129,20 @@ SIGNOFF:
 
 ## The Three-Fix Rule
 
-If 3 targeted ECOs on the same failure don't resolve it:
+If 3 targeted ECOs on the same failure don't resolve it (investigation
+heuristic):
 
 1. **STOP.** Do not attempt ECO #4.
-2. **Run the five-level trace** to find the real root cause.
+2. **Reassess** - re-examine hypotheses, inputs, constraints and the
+   protected metric definitions. Run the five-level trace to test
+   candidate root causes; "it's upstream" is a hypothesis, not a
+   conclusion.
 3. **Present options to the human** with cost/risk assessment.
 4. **The human decides** which level to fix at.
 
-Diminishing returns (200ps → 100ps → 50ps per fix) = the problem
-is upstream of where you're fixing.
+Diminishing returns (200ps → 100ps → 50ps per fix) = a signal worth
+investigating - confirm the real root cause before believing it points
+upstream.
 
 ---
 

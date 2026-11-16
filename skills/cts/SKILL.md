@@ -132,18 +132,34 @@ EXAMPLE:
   - Path A → reg_b: slack improves by 100ps → +0.02ns (passes)
   - Path reg_b → next: slack decreases by 100ps (check it still passes)
 
-IMPLEMENTATION IN OpenROAD:
-  CTS doesn't directly support useful skew targets per-sink.
-  Instead, apply post-CTS clock buffer insertion:
-  
-  # After CTS, adjust specific sink timing:
-  set_clock_latency -source -rise 0.1 [get_pins reg_b/CLK]
-  
-  OR manually insert a delay buffer in the clock path to reg_b.
+IMPLEMENTATION IN OpenROAD (corrected):
+  There are two DIFFERENT things called "skew" here - do not
+  confuse them:
+
+  1. set_clock_latency -source -rise 0.1 [get_pins reg_b/CLK]
+     is a CONSTRAINT-MODEL knob only: it tells STA that the
+     clock arrives 0.1ns later at that sink. It changes the
+     REPORTED slack but it does NOT move a single buffer. Using
+     it as a "useful skew implementation" is incorrect: STA
+     numbers improve while the physical clock tree is unchanged.
+
+  2. Physical useful skew requires rebalancing the real clock
+     tree: insert a delay buffer on reg_b's clock path (or
+     adjust CTS sink delays) and re-run CTS, then re-run STA
+     on the extracted netlist.
+
+  Insertion delay note (corrected): common insertion delay
+  CANCELS for register-to-register paths launched and captured
+  by the same clock (both endpoints shift together). It does
+  NOT cancel for I/O paths (input-to-reg, reg-to-output) and it
+  eats into the period budget there. "Every picosecond of
+  insertion delay eats setup margin" is therefore true only for
+  paths with a non-common clock endpoint.
 
 CAUTION:
   Every ps of useful skew borrowed from setup makes hold harder.
-  Check BOTH setup and hold after applying useful skew.
+  Check BOTH setup and hold after applying useful skew, on the
+  extracted netlist - not just the constraint file.
   The routing agent will need to insert hold buffers on the
   paths where you borrowed time.
 ```

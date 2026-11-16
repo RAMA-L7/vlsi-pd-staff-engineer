@@ -6,7 +6,7 @@
 
 This repository implements a complete multi-agent VLSI Physical Design engineering framework that coordinates specialist AI agents, executable engineering skills, EDA tools, and automated verification procedures through a disciplined stage-gate flow.
 
-**Status**: Framework configured and fully documented across Phases 14–17B. Live regression execution blocked by Code Mode runtime shell integration issue (persistent since Phase 14, November 2026). All agent and skill configurations, stage scripts, and evidence from prior runs are preserved and independently verifiable.
+**Status**: Framework configured and fully documented across Phases 14–17B. The 15-stage OpenROAD-based regression is executable from this repository via the documented baseline command (`python -m assistant baseline`) — see `docs/reviews/remediation-report.md` for the current end-to-end run evidence (16 stages PASS on `test_counter`, reproduced twice). Agent and skill configurations, stage scripts, and evidence from prior runs are preserved and independently verifiable. Earlier README claims that live execution was "blocked by a Code Mode runtime shell integration issue" predate this remediation and no longer apply to the baseline command path.
 
 ---
 
@@ -18,8 +18,8 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 
 | Principle | Description |
 |---|---|
-| **Stage gates** | No stage proceeds without QoR review + LEC + low power verification passing |
-| **Three-fix rule** | If 3 ECOs don't resolve a failure, stop and trace the root cause upstream |
+| **Stage gates** | No stage proceeds without QoR review + LEC + low power verification passing. Prompt-level gate rules are ADVISORY ONLY: executable enforcement lives in `assistant/` (deterministic gate controller with input-hash-bound evidence; see `docs/reviews/remediation-tracker.md` finding A) |
+| **Three-fix rule (heuristic)** | Investigation heuristic, not a law: if 3 ECOs don't resolve a failure, stop and reassess hypotheses, inputs and protected metrics. It does NOT imply the problem is upstream |
 | **Evidence before claims** | Every signoff check runs fresh; "it passed earlier" is not evidence |
 
 **Framework Scope**: Sky130 HD ASIC physical design flow from RTL to GDSII, with two independently configurable designs (test_counter and soc_ctrl), negative-test fault detection, and reproducible validation.
@@ -53,6 +53,19 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 | **Reproducibility** | ✅ Verified (Phase 14) | Two runs A&B: 88/88 checks, 20/20 artefacts identical; GDSII geometry identical after timestamp stripping |
 | **Negative testing** | ✅ Verified (Phase 15) | N1–N7 all DETECTED; N7 fix: net swap in `15a_lvs_refcdl.tcl` |
 
+### NOT implemented in this repository (do not claim)
+
+| Capability | Status | Note |
+|---|---|---|
+| **IR drop analysis** | **UNSUPPORTED** | No executable stage exists in `regression/stages/`; mentioned in agent scope text only |
+| **EM (electromigration)** | **UNSUPPORTED** | No executable stage exists in `regression/stages/` |
+| **Antenna checking** | **UNSUPPORTED** | No executable stage exists in `regression/stages/` |
+| **Post-metal-fill extraction / post-fill timing closure** | **UNSUPPORTED** | Flow stops at routed extraction (stage 11) + STA (stage 12); fill extraction is not demonstrated |
+| **Qualified/signoff-grade parasitic extraction** | **UNSUPPORTED** | Academic OpenROAD extraction only; no QRC/StarRC integration |
+| **Autonomous RTL-to-GDSII / tapeout readiness** | **NOT CLAIMED** | The external review verdict stands: evidence does not justify autonomous or signoff claims |
+
+These gaps are tracked in `docs/reviews/remediation-tracker.md` (findings J, K, N).
+
 ### Design-Specific Execution Evidence
 
 | Design | Capability | Phase | Result |
@@ -65,10 +78,10 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 | **test_counter** | REPRODUCIBLE | 14 | Two runs A&B, 20/20 identical artefacts |
 | **soc_ctrl** | Framework configured | 15 | `-Design soc_ctrl` parameter operational; stage scripts design-aware |
 | **soc_ctrl** | RTL + SDC created | 15 | `examples/soc_ctrl/rtl/soc_ctrl.v` and `soc_ctrl.sdc` |
-| **soc_ctrl** | Full regression NOT executed | — | Shell tool blocked; all 15 stages configured but not live-executed |
-| **soc_ctrl** | Do NOT claim DRC/LVS/STA/signoff | — | Full regression pending shell recovery |
+| **soc_ctrl** | Full regression NOT executed | — | Not run in this pass; test_counter was used as the single reproducible baseline design (see `docs/reviews/remediation-report.md`) |
+| **soc_ctrl** | Do NOT claim DRC/LVS/STA/signoff | — | No DRC/LVS/STA evidence exists for soc_ctrl |
 
-**Important**: Abilities marked "Configured" have scripts in place with design-aware paths. Abilities marked "Verified" have evidence from actual Phase 14 test_counter runs. soc_ctrl abilities marked "NOT executed" have not been live-executed due to the shell blocker.
+**Important**: Abilities marked "Configured" have scripts in place with design-aware paths. Abilities marked "Verified" have evidence from actual Phase 14 test_counter runs. soc_ctrl abilities marked "NOT executed" have not been executed; the previously cited "shell blocker" no longer applies (the baseline command runs today for test_counter), but no soc_ctrl run was performed in this pass and none is claimed.
 
 ---
 
@@ -396,7 +409,7 @@ JSON reports with `schema_version`, per-stage status, per-check results, artifac
 | **INCONCLUSIVE** | Partial/corrupt output; fresh run recommended | Re-run tool fresh; do not claim result based on partial output |
 | **NOT_TESTED** | Check not applicable to this stage | Document; do not count in pass/fail tallies |
 
-### Command Examples (Configuration Only; Shell Blocked)
+### Command Examples
 
 ```powershell
 # Design selection (configuration only; no live execution)
@@ -416,7 +429,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 # REG_DESIGN, REG_RTL, REG_SDC, REG_LIB_TT, REG_LIB_SS, REG_LIB_FF, REG_CDL, REG_NETLIST_MAPPED
 ```
 
-**Clear Distinction**: Configured (framework supported, scripts in place, evidence from prior runs exists) vs. Executed (live tool invocation, fresh results, independent verification — blocked until shell recovery).
+**Clear Distinction**: Configured (framework supported, scripts in place) vs. Executed (live tool invocation, fresh results, independent verification). test_counter is Executed end-to-end (16-stage baseline, reproduced twice); soc_ctrl remains Configured-only.
 
 ---
 
@@ -504,9 +517,9 @@ $Resume = $true  # Skip completed stages; only run remaining
 - ✅ Stage scripts design-aware via `$Top = $env:REG_DESIGN`
 - ✅ Design config in `$DesignConfig` hashtable
 - ✅ Separate workspace (`workspace/run_soc_ctrl_*`)
-- ⚠️ Full regression NOT yet executed (shell tool blocked)
+- ⚠️ Full regression NOT yet executed in this pass (design not chosen for the baseline; test_counter was)
 
-**Outstanding Validation** (pending shell recovery):
+**Outstanding Validation** (soc_ctrl stages not executed in this pass):
 | Stage | Status | Notes |
 |---|---|---|
 | **Synthesis (stage 01)** | ⚙️ Configured | Framework configured, not live-executed |
@@ -631,7 +644,7 @@ vlsi-pd-staff-engineer/
 
 | Limitation | Description | Impact |
 |---|---|---|
-| **Shell execution blocker** | Code Mode runtime shell integration issue — exit code 1, no output — persistent since Phase 14 early November 2026 | All live regression execution, git operations, WSL commands, and negative test suite blocked; all work completed via `read`/`write`/`edit` tools |
+| **Prior shell integration blocker (resolved)** | Previously reported Code Mode shell issue - no longer applies to the documented baseline command path | Live regression, git operations and WSL commands are available in this pass; historical limitation retained for context |
 | **soc_ctrl full regression not executed** | All 15 stages configured but not live-executed | DRC, LVS, multi-corner STA, GDSII generation not verified for soc_ctrl; do NOT claim signoff |
 | **KLayout DRC/LVS on Windows** | KLayout 0.30.13 extracted; not runnable (missing Qt5 system libraries) | WSL invocation requires separate approval; DRC/LVS/GDSII blocked from Windows |
 | **Single-corner synthesis** | TT only; SS/FF Liberty present but not used for synthesis | Multi-corner synthesis not performed; explicitly flagged as risk in QoR report |
@@ -656,16 +669,16 @@ vlsi-pd-staff-engineer/
 
 **What Remains Incomplete**:
 
-1. **soc_ctrl full regression** — All 15 stages configured but not live-executed due to shell blocker
+1. **soc_ctrl full regression** — All 15 stages configured but not executed in this pass (baseline design was test_counter)
 2. **DRC/LVS/STA on soc_ctrl** — Full signoff not performed
 3. **GDSII generation on soc_ctrl** — Not verified
-4. **Live regression execution on both designs** — Blocked by Code Mode shell integration issue
-5. **Git operations** — Status, commit, push blocked until shell recovery
-6. **Remote GitHub publication** — Procedures documented; execution blocked
+4. **Live regression execution on both designs** - test_counter executed (16/16 stages, twice); soc_ctrl not executed in this pass
+5. **Git operations** - available and used (prior releases published via PRs; this pass is local/uncommitted pending review)
+6. **Remote GitHub publication** - prior releases published via PRs; this pass publishes implementation directly to origin/main
 
-### Roadmap (When Shell Recovered)
+### Roadmap
 
-1. **Shell recovery** — Code Mode runtime shell integration fix (primary objective)
+1. ~~Shell recovery~~ - DONE: baseline command executes the full regression (see docs/reviews/remediation-report.md)
 2. **test_counter regression** — Execute `run_regression.ps1 -Design test_counter`; verify REPRODUCIBLE baseline
 3. **soc_ctrl regression** — Execute `run_regression.ps1 -Design soc_ctrl`; validate all 15 stages (configuration-only initially)
 4. **DRC/LVS/STA signoff** — Complete signoff on both designs (test_counter verified Phase 14; soc_ctrl pending)
@@ -686,9 +699,9 @@ vlsi-pd-staff-engineer/
 
 ## L. Quick Start
 
-### Prerequisites (Read-Only Inspection; Shell Currently Blocked)
+### Prerequisites
 
-> **Note**: Live regression execution requires shell tool recovery. All configuration and documentation are available for immediate review.
+> **Note**: The recommended entry point is the documented baseline command `python -m assistant baseline` (full provenance captured). `run_regression.ps1` can also be invoked directly.
 
 | Requirement | Path/Command | Notes |
 |---|---|---|
@@ -698,7 +711,7 @@ vlsi-pd-staff-engineer/
 | **KLayout** | `/mnt/d/tools/KLayout/` | Extracted (0.30.13); not runnable from Windows (Qt issues); WSL invocation available |
 | **Python 3** | `D:\tools\venv\` | Virtualenv with yowasp-yosys, yowasp-sby |
 
-### Configuration (Shell Recovery Required for Live Execution)
+### Configuration (Live Execution Available)
 
 ```powershell
 # Test framework configuration (parameter only; no live execution)
@@ -743,7 +756,7 @@ This README has been upgraded from a general project introduction into a profess
 - **H**: Regression usage — design-aware interface, stage execution, acceptance engine, JSON reports, artifact organization, failure classification; clear labeled distinction between configured and executed
 - **I**: Current supported designs — test_counter (validated baseline, Phase 14 REPRODUCIBLE) and soc_ctrl (integrated, pending execution) with distinct statuses and RTL provenance
 - **J**: GitHub project architecture — actual repository directory structure with all agent, skill, example, and documentation paths
-- **K**: Limitations and roadmap — shell execution blocker, pending soc_ctrl full regression, current single-design physical signoff evidence, what has been demonstrated through actual runs
+- **K**: Limitations and roadmap - resolved shell blocker, pending soc_ctrl full regression, current single-design physical signoff evidence, what has been demonstrated through actual runs
 - **L**: Quick start — prerequisites and setup with configurable machine-specific paths; no credentials or private environment information exposed
 
-All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. The shell execution blocker is clearly documented throughout. Design-specific results are correctly attributed to test_counter (Phase 14 verified execution) vs. soc_ctrl (Phase 17B configured only).
+All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Stale shell-blocker claims have been removed; current run evidence is in docs/reviews/remediation-report.md. Design-specific results are correctly attributed to test_counter (Phase 14 verified execution) vs. soc_ctrl (Phase 17B configured only).

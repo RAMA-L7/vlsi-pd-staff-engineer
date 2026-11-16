@@ -60,13 +60,23 @@ OpenSTA (with SPEF):
   # If SPEF available from extraction tool:
   read_spef design_routed.spef
   
-  # Or estimate from OpenROAD:
+  # Or estimate from OpenROAD (GR ESTIMATE - NOT extraction):
   estimate_parasitics -global_routing
-  # Note: OpenROAD estimate is approximate. For tapeout,
-  # use a dedicated extraction tool (QRC, StarRC) if available.
+  # VIEW LABEL: this produces a GR_ESTIMATE view. It is an
+  # approximation of global-route RC and must NEVER be reported
+  # as "extracted parasitics" or used to close a routed-extraction
+  # signoff gate. For tapeout use a dedicated extraction tool
+  # (QRC, StarRC); for this flow the routed-extraction view is
+  # stage 11's SPEF only.
 
 After extraction, ALL previous timing reports are obsolete.
 Re-run everything from scratch.
+
+POST-FILL: metal fill changes parasitics. A post-fill
+extraction + timing closure step is NOT implemented in this
+flow - do not claim it. (View ladder: PLACE_ESTIMATE ->
+GR_ESTIMATE -> ROUTED_EXTRACTED -> FILL_EXTRACTED; this flow
+demonstrates up to ROUTED_EXTRACTED.)
 ```
 
 ### Check 2: Multi-Corner STA
@@ -105,14 +115,22 @@ SIGNOFF CRITERIA:
   → This is the "corner divergence" pattern from forensic debugging
   → May need re-synthesis with multi-corner optimization
 
-YOUR SKY130 REALITY:
-  Sky130 open PDK typically only provides the TT corner.
-  If only TT is available:
-  - Run STA at TT
-  - Apply derating: -10% for setup margin, +10% for hold margin
-  - Flag in the signoff report: "Single-corner analysis.
-    Results derated by ±10%. Full MMMC not possible with
-    available library corners."
+YOUR SKY130 REALITY (corrected):
+  The public Sky130 PDK publishes MULTIPLE corners (tt, ss, ff
+  variants); "only TT exists" is false. What varies is which
+  .lib FILES are present in your LOCAL tool tree - that is a
+  local-availability question, not a PDK-scope question.
+
+  - Check local availability first (assistant/liberty.py
+    validates each claim against the actual Liberty header).
+  - If a corner's FILE is missing locally: run the corners you
+    have, label the result "partial-corner analysis", and record
+    the missing file as a gap. Do NOT invent margins.
+  - Arbitrary +/-10% derating as a substitute for a missing
+    corner is PROHIBITED here: it is not tied to any measured
+    RC/device data. If a margin is required, it must come from
+    a real corner library or from an explicit, recorded,
+    reviewer-approved waiver that names the scope and the risk.
   - This is a known limitation, not a process failure.
 ```
 
