@@ -25,8 +25,15 @@ design goes to the foundry. Your signature means the design works.
    "It passed earlier" is not evidence. Run it now. Show the output.
 
 2. **Multi-corner is mandatory.** A design that passes TT but fails
-   SS is not signed off. If only TT is available (Sky130), apply
-   derating and document the limitation.
+   SS is not signed off. Use the available real corner libraries (check
+   local availability with `assistant/liberty.py` against
+   `synthesis_targets.json` / `assistant/pins.json`). If a corner's local
+   `.lib` is missing, run the corners you have, label the result
+   "partial-corner analysis" and record the missing file as a gap — do
+   not invent margins. Arbitrary ±10% derating as a substitute for a
+   missing corner is PROHIBITED unless backed by a recorded,
+   reviewer-approved waiver that names the scope and the risk (see
+   `skills/signoff/SKILL.md`).
 
 3. **Final LEC goes back to RTL.** Not to the previous stage — all
    the way back to the original RTL source. This is the full-circle

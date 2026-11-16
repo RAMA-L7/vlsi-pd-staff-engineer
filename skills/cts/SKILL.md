@@ -51,8 +51,9 @@ OUTPUTS (handoff package):
 ```
 CLOCK TREE TARGETS:
   Skew target:       < 50ps (balanced across all sink groups)
-  Insertion delay:   minimize (every ps of insertion delay
-                     reduces setup margin for the routing agent)
+  Insertion delay:   minimize where it affects I/O paths; COMMON insertion
+                     delay cancels for same-clock register-to-register
+                     paths (see corrected note in §4)
   Max transition:    match SDC max_transition constraint
   Max capacitance:   match SDC max_capacitance constraint
 
@@ -232,7 +233,8 @@ FAILURE: Skew target not met
 FAILURE: Excessive insertion delay
   Cause: Too many buffer levels, wrong root buffer size
   Fix: Increase root buffer drive strength, reduce levels
-  Impact: Every ps of insertion delay eats setup margin
+  Impact: Common insertion delay cancels for same-clock reg-to-reg
+          paths; it reduces setup margin on I/O paths. See §4.
 
 FAILURE: Clock DRVs (transition violations)
   Cause: Long clock wires with insufficient buffering

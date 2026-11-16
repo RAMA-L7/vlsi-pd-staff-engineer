@@ -215,6 +215,81 @@ def test_na_rule_registry_known():
     assert "NA-RULE:NO-MACROS" in APPLICABILITY_RULES
 
 
+# --------------------------- NA validation at EVERY recording boundary (gap 1)
+def test_record_evidence_direct_na_empty_reason_raises_and_not_recorded(ctl):
+    """Direct record_evidence() with an empty NA reason must fail, not PASS."""
+    ev = Evidence.from_run(
+        check_id="upf_check", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason="",
+    )
+    with pytest.raises(ApplicabilityError):
+        ctl.record_evidence(ev)
+    assert ctl.latest_evidence("upf_check") is None
+    # No valid evidence -> required check falls back to NOT_RUN -> gate blocked.
+    gd = ctl.evaluate_gate("lp_gate", ["upf_check"])
+    assert not gd.passed
+    assert gd.checks["upf_check"]["status"] == Status.NOT_RUN.value
+
+
+def test_record_evidence_direct_na_unknown_rule_raises(ctl):
+    ev = Evidence.from_run(
+        check_id="x", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason="NA-RULE:BOGUS this rule is not in the registry at all",
+    )
+    with pytest.raises(ApplicabilityError):
+        ctl.record_evidence(ev)
+    assert ctl.latest_evidence("x") is None
+
+
+def test_record_evidence_direct_na_valid_reason_succeeds_and_gate_passes(ctl):
+    ev = Evidence.from_run(
+        check_id="upf_check", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason="NA-RULE:NO-UPF design has no UPF/CPF power intent file in scope",
+    )
+    recorded = ctl.record_evidence(ev)
+    assert recorded.applicability_reason.startswith("NA-RULE:NO-UPF")
+    gd = ctl.evaluate_gate("lp_gate", ["upf_check"])
+    assert gd.passed
+    assert gd.checks["upf_check"]["status"] == Status.NOT_APPLICABLE.value
+
+
+def test_direct_na_evidence_cannot_bypass_gate_to_pass(ctl):
+    """The historical bypass (record NA directly with no reason) is closed."""
+    ev = Evidence(
+        check_id="upf_check", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason="",
+    )
+    with pytest.raises(ApplicabilityError):
+        ctl.record_evidence(ev)
+    assert not ctl.evaluate_gate("lp_gate", ["upf_check"]).passed
+
+
+def test_valid_na_non_blocking_alongside_passing_checks(ctl):
+    ctl.record_evidence(_pass_ev("sta"))
+    ctl.record_evidence(Evidence.from_run(
+        check_id="upf_check", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason="NA-RULE:NO-UPF design has no UPF power intent file in scope",
+    ))
+    assert ctl.evaluate_gate("g", ["sta", "upf_check"]).passed
+
+
+def test_mark_not_applicable_and_direct_record_share_validation(ctl):
+    """Both entry points reject the same invalid reason (no divergent logic)."""
+    bad = "NA-RULE:NO-UPF short"  # too short to justify the rule
+    ev1 = Evidence.from_run(
+        check_id="a", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason=bad,
+    )
+    with pytest.raises(ApplicabilityError):
+        ctl.mark_not_applicable(ev1)
+    ev2 = Evidence.from_run(
+        check_id="b", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason=bad,
+    )
+    with pytest.raises(ApplicabilityError):
+        ctl.record_evidence(ev2)
+
+
 # ------------------------------------------------------- waivers
 def test_waiver_is_scoped_recorded_visible(ctl):
     ev = Evidence.from_run(

@@ -188,27 +188,44 @@ FOR EACH NON-EQUIVALENT POINT:
 # ============================================
 
 # Method 1: SAT-based (best for small-medium designs)
-read_verilog -sv <rtl_files>            ;# reference
+# PROVEN RECIPE — see examples/test-counter/test_framework.sh (TEST 6, finding D).
+# equiv_make takes THREE args: gold_module, gate_module, equiv_module.
+# The two designs are stashed and re-imported by module name, and the GATE side
+# is FLATTENED so the SAT solver sees library-cell Boolean functions rather
+# than opaque cell boundaries.
+read_verilog -sv <rtl_files>            ;# gold / reference design
 prep -top <top_module>
-splitnets -ports
-design -save reference
+async2sync
+design -stash gold
 
-read_verilog <gate_netlist>             ;# revised
-read_verilog -lib <lib_cells.v>         ;# cell functional models
+design -reset
+read_liberty -ignore_miss_func <lib_file>   ;# or: read_verilog -lib <lib_cells.v>
+read_verilog <gate_netlist>             ;# gate / revised design
 prep -top <top_module>
-splitnets -ports
-design -save revised
+flatten <top_module>                    ;# expose library-cell functions to SAT
+opt_clean -purge
+async2sync
+design -stash gate
 
-# Perform equivalence check
-equiv_make reference revised
+design -reset
+design -copy-from gold -as gold <top_module>
+design -copy-from gate -as gate <top_module>
+equiv_make gold gate equiv               ;# THREE args (finding D)
+hierarchy -top equiv
 equiv_simple                            ;# fast pass
 equiv_induct                            ;# induction for sequential
-equiv_status -assert                    ;# PASS or FAIL with details
+equiv_status -assert                    ;# exits non-zero if any point unproven
+
+# REQUIRED verdict: `equiv_status -assert` must exit 0 AND the log must contain
+# the explicit line "Equivalence successfully proven". Do not accept exit code
+# alone as PASS — assert the verdict string exactly as test_framework.sh does.
+# Add a negative control (a deliberately corrupted netlist that MUST be rejected)
+# to prove the LEC setup is sound.
 
 # If equiv_simple + equiv_induct leave unresolved:
 equiv_struct                            ;# structural matching
 equiv_simple -undef                     ;# handle X-states
-equiv_status -assert
+equiv_status -assert                    ;# assert verdict again
 
 
 # Method 2: Simulation-based sanity check (not formal, but fast)

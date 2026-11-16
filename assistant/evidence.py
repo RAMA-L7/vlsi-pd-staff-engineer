@@ -72,6 +72,99 @@ def view_compatible(required: str | None, actual: str) -> bool:
     return VIEW_ORDER.index(actual) >= VIEW_ORDER.index(required)
 
 
+class ProvenanceError(ValueError):
+    """Raised when CLI-supplied evidence provenance is invalid/incomplete."""
+
+
+def bind_file(path: str) -> dict:
+    """Return ``{path, sha256}`` for an *existing* file.
+
+    Unlike the internal ``_file_entry`` helper used by ``from_run`` (which
+    tolerates missing files as ``<missing>``), this refuses missing or
+    unreadable files so the CLI cannot silently record unbound artefacts.
+    """
+    try:
+        sha = sha256_file(path)
+    except OSError as exc:
+        raise ProvenanceError(
+            f"file does not exist or is unreadable: {path!r}"
+        ) from exc
+    return {"path": str(path), "sha256": sha}
+
+
+def _parse_pairs(items: Iterable[str], *, kind: str) -> dict[str, str]:
+    """Parse repeatable ``NAME=VALUE`` CLI tokens into a dict."""
+    out: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise ProvenanceError(
+                f"expected NAME={kind} token, got {item!r}"
+            )
+        name, value = item.split("=", 1)
+        name, value = name.strip(), value.strip()
+        if not name:
+            raise ProvenanceError(f"empty name in {item!r}")
+        if not value:
+            raise ProvenanceError(f"empty {kind} in {item!r}")
+        out[name] = value
+    return out
+
+
+def parse_tool_versions(items: Iterable[str]) -> dict[str, str]:
+    """Parse repeatable ``NAME=VERSION`` tokens (non-empty name + version)."""
+    return _parse_pairs(items, kind="version")
+
+
+def hash_named_files(items: Iterable[str]) -> dict[str, str]:
+    """Parse repeatable ``NAME=PATH`` tokens into ``{name: sha256}``.
+
+    Files must exist; missing/unreadable files raise ``ProvenanceError``.
+    """
+    pairs = _parse_pairs(items, kind="path")
+    hashed: dict[str, str] = {}
+    for name, path in pairs.items():
+        try:
+            hashed[name] = sha256_file(path)
+        except OSError as exc:
+            raise ProvenanceError(
+                f"file does not exist or is unreadable: {path!r}"
+            ) from exc
+    return hashed
+
+
+def validate_provenance(ev: "Evidence") -> list[str]:
+    """Return completeness errors for a CLI-recorded evidence record.
+
+    Substantive statuses (everything except ``NOT_APPLICABLE``) must carry a
+    command, an explicit exit code, a concrete analysis view, at least one
+    bound (existing) report/log/artifact, and at least one tool version.
+    ``NOT_APPLICABLE`` evidence needs only a validated reason (checked by the
+    controller), so it is exempt here.
+
+    This is intentionally opt-in for the CLI path only; direct API callers
+    using ``Evidence.from_run`` remain usable for tests and internal flows.
+    """
+    if ev.status is Status.NOT_APPLICABLE:
+        return []
+    errs: list[str] = []
+    if not ev.command or not any(str(c).strip() for c in ev.command):
+        errs.append("a non-empty command is required")
+    if ev.exit_code is None:
+        errs.append("exit-code must be provided explicitly")
+    if not ev.analysis_view or ev.analysis_view == "UNKNOWN":
+        errs.append("a concrete analysis view is required")
+    artefacts = list(ev.reports or []) + list(ev.logs or []) + list(ev.artifacts or [])
+    bound = [
+        a for a in artefacts
+        if isinstance(a, dict) and a.get("sha256") not in (None, "", "<missing>")
+    ]
+    if not bound:
+        errs.append("at least one existing report, log or artifact is required")
+    if not ev.tool_versions:
+        errs.append("at least one tool version is required")
+    return errs
+
+
 @dataclass
 class Evidence:
     check_id: str

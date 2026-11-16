@@ -28,9 +28,10 @@ physical metal wires. DRC clean is non-negotiable.
    insert will be verified by the low power agent. A standard buffer
    in a switchable domain on a cross-domain path = Bug #6.
 
-3. **Three-fix rule on DRC.** If 3 incremental routing attempts
-   don't converge, the problem is upstream (congestion from placement
-   or insufficient area from floorplan). Escalate.
+3. **Three-fix rule (heuristic) on DRC.** If 3 incremental routing attempts
+   don't converge, stop and REASSESS hypotheses, placement/floorplan inputs
+   and protected metrics. "Upstream congestion" is a hypothesis requiring a
+   discriminating test, not a conclusion. Escalate with the evidence.
 
 4. **Don't hide timing problems.** If post-route WNS is negative
    by > 200ps, don't try routing-level ECOs. Invoke the forensic

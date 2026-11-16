@@ -1,7 +1,17 @@
 """Hashing + evidence binding: input changes, staleness, view compatibility."""
 import os
 
-from assistant.evidence import Evidence, view_compatible
+import pytest
+
+from assistant.evidence import (
+    Evidence,
+    ProvenanceError,
+    bind_file,
+    hash_named_files,
+    parse_tool_versions,
+    validate_provenance,
+    view_compatible,
+)
 from assistant.hashing import (
     fingerprint,
     sha256_bytes,
@@ -83,3 +93,54 @@ def test_view_compatible_ordering():
     assert view_compatible(None, "ANYTHING")
     # a routed-extraction result does not satisfy a fill gate
     assert not view_compatible("FILL_EXTRACTED", "ROUTED_EXTRACTED")
+
+
+# ------------------------------------------------------- CLI provenance helpers
+def test_bind_file_stores_path_and_sha256_and_requires_existence(tmp_path):
+    rpt = tmp_path / "sta.rpt"
+    rpt.write_text("WNS: 0.5", encoding="utf-8")
+    entry = bind_file(str(rpt))
+    assert entry["path"] == str(rpt)
+    assert entry["sha256"] == sha256_file(str(rpt))
+    with pytest.raises(ProvenanceError):
+        bind_file(str(tmp_path / "absent.rpt"))
+
+
+def test_parse_tool_versions_and_hash_named_files(tmp_path):
+    lib = tmp_path / "tt.lib"
+    lib.write_text("liberty", encoding="utf-8")
+    assert parse_tool_versions(["yosys=0.9", "opensta=2.6"]) == {
+        "yosys": "0.9", "opensta": "2.6"
+    }
+    with pytest.raises(ProvenanceError):
+        parse_tool_versions(["yosys="])
+    assert hash_named_files([f"tt={lib}"]) == {"tt": sha256_file(str(lib))}
+    with pytest.raises(ProvenanceError):
+        hash_named_files([f"tt={tmp_path / 'absent.lib'}"])
+
+
+def test_validate_provenance_flags_incomplete_and_exempts_na(tmp_path):
+    rpt = tmp_path / "sta.rpt"
+    rpt.write_text("WNS: 0.5", encoding="utf-8")
+    incomplete = Evidence.from_run(
+        check_id="sta", status=Status.PASS, reason="ok"
+    )
+    problems = validate_provenance(incomplete)
+    assert any("command" in p for p in problems)
+    assert any("exit-code" in p for p in problems)
+    assert any("analysis view" in p for p in problems)
+    assert any("report" in p for p in problems)
+    assert any("tool version" in p for p in problems)
+
+    complete = Evidence.from_run(
+        check_id="sta", status=Status.PASS, reason="ok",
+        command=["sta"], exit_code=0, analysis_view="ROUTED_EXTRACTED",
+        tool_versions={"sta": "3.1"}, reports=[str(rpt)],
+    )
+    assert validate_provenance(complete) == []
+
+    na = Evidence.from_run(
+        check_id="upf", status=Status.NOT_APPLICABLE, reason="",
+        applicability_reason="NA-RULE:NO-UPF design has no UPF file in scope",
+    )
+    assert validate_provenance(na) == []

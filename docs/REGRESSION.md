@@ -77,11 +77,11 @@ $Top = $env:REG_DESIGN
 - **Top Module**: `soc_ctrl`
 - **Artifact Prefix**: `soc_ctrl`
 - **Expected Output**: `soc_ctrl_synth.v`, `soc_ctrl_lec_generic.log`, etc.
-- **Framework Integration**: `-Design soc_ctrl` parameter operational; stage scripts configured; execution blocked by shell tool failure
+- **Framework Integration**: `-Design soc_ctrl` parameter operational; stage scripts configured; full regression not executed in this pass (the documented baseline command works for `test_counter`; historically reported shell blocker no longer applies)
 - **Known Limitations**:
   - Original soc_ctrl reference is gate-level netlist, not RTL
   - Framework created RTL representation for flow compatibility
-  - Full regression not yet live-executed (shell blocked)
+  - Full regression not executed in this pass for soc_ctrl (baseline design was test_counter)
   - Do NOT claim DRC, LVS, or timing signoff for soc_ctrl
 
 ### Stage Execution
@@ -691,7 +691,7 @@ wsl -d Ubuntu-24.04 -- bash -lc '
 - Netlists match: "Congratulations! Netlists match."
 - LVS database produced and valid
 
-**Current Blocked Status**: Shell tool non-functional; LVS not live-executed in Phase 17B.
+**Execution Status**: LVS (stage 15) was executed in the documented baseline (16/16 stages PASS, 92 checks). The historically reported shell blocker (Phase 17B) no longer applies to the baseline command path; no separate soc_ctrl LVS run was performed.
 
 ### Acceptance Checks
 
@@ -815,7 +815,7 @@ Seven negative tests (N1–N7) inject faults/deficiencies into the regression fl
 |---|---|---|
 | **PASS** | All acceptance checks pass; fresh evidence present | Proceed to next stage |
 | **FAIL** | One or more checks fail | Do not proceed; fix and re-check (or escalate via three-fix rule) |
-| **BLOCKED** | Environment prevents check execution (shell tool blocked) | Document blocker; do not claim FAIL or PASS |
+| **BLOCKED** | Environment/tooling prevents check execution | Document blocker; do not claim FAIL or PASS |
 | **ERROR** | Tool execution error (unexpected) | Investigate tool/env; re-run fresh; do not claim result |
 | **INCONCLUSIVE** | Partial/corrupt output; fresh run recommended | Re-run tool fresh; do not claim result based on partial output |
 | **NOT_TESTED** | Check not applicable to this stage | Document; do not count in pass/fail tallies |
@@ -848,21 +848,21 @@ Seven negative tests (N1–N7) inject faults/deficiencies into the regression fl
 
 **GDSII Geometry Note**: Byte-identical except for BGNLIB type-0x0001 timestamp records (≥24 bytes), which are stripped before comparison.
 
-### Shell Execution Blocker Affecting Regression
+### Shell Execution Blocker (historical, Phase 14–17A) — Resolved for Baseline
 
-**Current Status**: Shell tool non-functional (exit code 1, no output) — persistent since Phase 14 early November 2026
+**Historical status (Phase 14–17A)**: the Code Mode shell issue returned exit code 1 with no output; at that time all 15 stages were reported blocked for live execution from the Code Mode environment.
 
-**Affected Stages**: All 15 stages blocked; live regression execution not possible from Code Mode environment
+**Current status (2026-11-16)**: the documented baseline command (`python -m assistant baseline`) executes all 16 stages PASS (92 checks) on test_counter; live LEC/STA gates pass. soc_ctrl was simply not executed in this pass.
 
-**Workaround**: All Phase 17B work completed via `read`/`write`/`edit` tools; all evidence preserved; framework configuration verified via file inspection
+**Workaround (historical)**: Phase 17B work was completed via `read`/`write`/`edit` tools; evidence preserved and framework configuration verified via file inspection.
 
-**When Shell Recovers**:
+**Recovery actions (historical; baseline recovery achieved)**:
 - `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter` → verify REPRODUCIBLE
 - `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl` → verify all 15 stages
 - Git commit and push to remote
 - Verify remote publication
 
-### Command Examples (Configuration Only; Shell Blocked)
+### Command Examples
 
 ```powershell
 # Design selection (configuration only; no live execution)
@@ -893,18 +893,19 @@ $Resume = $true  # Skip completed stages; only run remaining
 - EDA tool paths documented (EDA_TOOL_REGISTRY.md)
 - Framework limitations documented
 
-**Executed (live verification, blocked)**:
-- Actual regression execution on test_counter (shell blocked; Phase 14 baseline: REPRODUCIBLE from prior runs)
-- Actual regression execution on soc_ctrl (shell blocked; framework configured, not executed)
-- DRC, LVS, multi-corner STA live execution on both designs (blocked)
-- GDSII generation and verification live (blocked)
-- Negative test suite execution (blocked; N7 fix verified in file content only)
-- Git operations (status, commit, push; blocked)
-- Remote GitHub publication (blocked; procedures documented)
+**Executed (live verification)**:
+- Full baseline regression on test_counter via `python -m assistant baseline`: 16/16 stages PASS, 92 checks, byte-identical netlists, reproduced twice (Phase 14 baseline plus 2026-11-16 validation)
+- Live LEC (positive + negative control) and STA ran-vs-meets gates — PASS
+- DRC, LVS, multi-corner STA and GDSII — executed as stages of the documented baseline (test_counter only)
+
+**Not executed in this pass**:
+- soc_ctrl full regression (framework configured; baseline design was test_counter)
+- soc_ctrl DRC/LVS/STA/GDSII (no results claimed)
+- New remote publication in this validation pass (implementation published at 6c4a264 on origin/main)
 
 **Clear Distinction**:
-- Configured: Framework supported, scripts in place, evidence from prior runs exists
-- Executed: Live tool invocation, fresh results, independent verification — blocked until shell recovery
+- Configured: Framework supported, scripts in place
+- Executed: Live tool invocation, fresh results, independent verification — demonstrated for test_counter via the documented baseline command
 
 ---
 

@@ -13,21 +13,35 @@ import sys
 from . import __version__
 from .controller import (
     APPLICABILITY_RULES,
+    ApplicabilityError,
     GateBypassError,
     GateController,
     RESTRICTED_CHANGE_CLASSES,
     Waiver,
 )
 from .diagnosis import diagnose_stage_delta, diagnose_timing, summarize_for_llm
-from .evidence import Evidence
+from .evidence import (
+    Evidence,
+    ProvenanceError,
+    bind_file,
+    hash_named_files,
+    parse_tool_versions,
+    validate_provenance,
+)
 from .liberty import validate_targets_file
-from .statuses import Status
+from .statuses import Status, parse_status
 from .tools import default_provenance
 
 
 def _out(obj) -> int:
     print(json.dumps(obj, indent=2, sort_keys=True, default=str))
     return 0
+
+
+def _err(kind: str, detail: str, code: int = 2) -> int:
+    """Print a clear JSON error and return a non-zero exit code."""
+    print(json.dumps({"error": kind, "detail": detail}, indent=2, sort_keys=True))
+    return code
 
 
 # ---------------------------------------------------------------- provenance
@@ -63,17 +77,52 @@ def cmd_sta(args) -> int:
 
 # --------------------------------------------------------------------- gate
 def cmd_gate_record(args) -> int:
-    ctl = GateController(args.state)
-    ev = Evidence.from_run(
+    is_na = args.status == Status.NOT_APPLICABLE.value
+
+    # Bind every supplied artefact/hash. Missing files or malformed NAME=VALUE
+    # tokens are refused up front so nothing partial is ever persisted.
+    try:
+        reports = [bind_file(p) for p in args.report]
+        logs = [bind_file(p) for p in args.log]
+        artifacts = [bind_file(p) for p in args.artifact]
+        tool_versions = parse_tool_versions(args.tool_version)
+        input_hashes = hash_named_files(args.input_hash)
+        config_hashes = hash_named_files(args.config_hash)
+        constraint_hashes = hash_named_files(args.constraint_hash)
+        library_hashes = hash_named_files(args.library_hash)
+        pdk_hashes = hash_named_files(args.pdk_hash)
+    except ProvenanceError as exc:
+        return _err("ProvenanceError", str(exc))
+
+    ev = Evidence(
         check_id=args.check,
-        status=args.status,
+        status=parse_status(args.status),
         reason=args.reason,
         command=[args.command] if args.command else [],
         exit_code=args.exit_code,
         analysis_view=args.view,
+        tool_versions=tool_versions,
+        input_hashes=input_hashes,
+        config_hashes=config_hashes,
+        constraint_hashes=constraint_hashes,
+        library_hashes=library_hashes,
+        pdk_hashes=pdk_hashes,
+        reports=reports,
+        logs=logs,
+        artifacts=artifacts,
+        applicability_reason=args.na_reason or "",
     )
-    if args.status == Status.NOT_APPLICABLE.value:
-        ev.applicability_reason = args.na_reason or ""
+
+    # Enforce provenance completeness for substantive statuses BEFORE any
+    # state write. NOT_APPLICABLE is exempt; its reason is validated by the
+    # controller's shared NA validator during recording.
+    if not is_na:
+        problems = validate_provenance(ev)
+        if problems:
+            return _err("IncompleteProvenance", "; ".join(problems))
+
+    ctl = GateController(args.state)
+    if is_na:
         recorded = ctl.mark_not_applicable(ev)
     else:
         recorded = ctl.record_evidence(ev)
@@ -220,6 +269,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exit-code", type=int, default=None)
     p.add_argument("--view", default="UNKNOWN")
     p.add_argument("--na-reason", default="")
+    p.add_argument("--report", action="append", default=[], metavar="PATH",
+                   help="existing report file (repeatable); bound by SHA-256")
+    p.add_argument("--log", action="append", default=[], metavar="PATH",
+                   help="existing log file (repeatable); bound by SHA-256")
+    p.add_argument("--artifact", action="append", default=[], metavar="PATH",
+                   help="existing output artifact (repeatable); bound by SHA-256")
+    p.add_argument("--tool-version", action="append", default=[], metavar="NAME=VERSION",
+                   help="tool version binding (repeatable, non-empty)")
+    p.add_argument("--input-hash", action="append", default=[], metavar="NAME=PATH",
+                   help="hash an existing input file (repeatable)")
+    p.add_argument("--config-hash", action="append", default=[], metavar="NAME=PATH",
+                   help="hash an existing config file (repeatable)")
+    p.add_argument("--constraint-hash", action="append", default=[], metavar="NAME=PATH",
+                   help="hash an existing constraint file (repeatable)")
+    p.add_argument("--library-hash", action="append", default=[], metavar="NAME=PATH",
+                   help="hash an existing library file (repeatable)")
+    p.add_argument("--pdk-hash", action="append", default=[], metavar="NAME=PATH",
+                   help="hash an existing PDK file (repeatable)")
     p.set_defaults(func=cmd_gate_record)
 
     p = sub.add_parser("gate-evaluate", help="evaluate a gate from evidence")
@@ -282,6 +349,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         return args.func(args)
+    except ApplicabilityError as exc:
+        return _err("ApplicabilityError", str(exc))
+    except ProvenanceError as exc:
+        return _err("ProvenanceError", str(exc))
     except GateBypassError as exc:
         print(json.dumps({"error": "GateBypassError", "detail": str(exc)}), file=sys.stderr)
         return 3

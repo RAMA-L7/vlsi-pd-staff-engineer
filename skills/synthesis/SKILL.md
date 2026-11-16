@@ -44,20 +44,30 @@ REQUIRED INPUTS CHECKLIST:
 Multi-corner multi-mode is not optional for any design going to silicon. Even for academic/FPGA flows, at minimum use a slow and fast corner to catch both setup and hold.
 
 ```
-MINIMUM CORNER SET:
-  Corner          | PVT              | Library file              | Purpose
-  ────────────────|──────────────────|───────────────────────────|──────────────
-  func_ss         | SS, 0.9V, 125°C  | *_ss_n40C_1v60.lib (etc) | Setup (worst)
-  func_ff         | FF, 1.1V, -40°C  | *_ff_n40C_1v95.lib (etc) | Hold (worst)
-  func_tt         | TT, 1.0V, 25°C   | *_tt_025C_1v80.lib       | Nominal QoR
+MINIMUM CORNER SET (verified against synthesis_targets.json and Liberty headers):
+  Corner         | PVT              | Library file                       | Purpose       | Local file
+  ───────────────|──────────────────|────────────────────────────────────|───────────────|────────────────────────
+  func_ss        | SS, 1.60V, 100°C | sky130_fd_sc_hd__ss_100C_1v60.lib | Setup (worst) | NOT present locally (gap)
+  func_tt        | TT, 1.80V, 25°C  | sky130_fd_sc_hd__tt_025C_1v80.lib | Nominal QoR   | present
+  func_ff        | FF, 1.95V, -40°C | sky130_fd_sc_hd__ff_n40C_1v95.lib | Hold (worst)  | present
 
-  RECOMMENDED ADDITIONS:
-  func_ss_low_t   | SS, 0.9V, -40°C  | Catches setup at cold-slow
-  func_ff_high_t  | FF, 1.1V, 125°C  | Catches hold at hot-fast
-  low_power_mode   | TT + reduced Vdd | For DVFS operating points
+  PVT values above come from the actual Liberty `operating_conditions` headers
+  (verifiable with `python -m assistant validate-pvt`), NOT from filename guesses.
+  `func_ss` is the configured setup-worst corner, but its .lib is NOT in the local
+  tool tree. That is a LOCAL AVAILABILITY GAP, not a claim that the Sky130 PDK
+  lacks slow corners. See `synthesis_targets.json` (per-corner `available` flag and
+  `note`) and `assistant/liberty.py` (header parser / PVT validation).
+
+  RECOMMENDED ADDITIONS (aspirational — use only when the real corner .lib is locally available):
+  func_ss_n40C    | SS, 1.40V, -40°C | sky130_fd_sc_hd__ss_n40C_1v40.lib | cold-slow setup | locally present (see assistant/pins.json)
+  low_power_mode  | TT + reduced Vdd | real reduced-Vdd .lib required    | DVFS points     | not locally demonstrated
+  Never substitute an invented voltage for a missing corner file. If a corner .lib
+  is absent locally, run the corners you have, label the result "partial-corner
+  analysis", record the gap and require a reviewer-approved waiver for any margin
+  claim (see `skills/signoff/SKILL.md`).
 ```
 
-**For Sky130 academic flows** (single .lib available): Use the TT corner as primary. State explicitly in the QoR report that multi-corner analysis was not performed and flag it as a risk to the human.
+**For Sky130 academic flows**: The local tool tree ships TT (`tt_025C_1v80`), FF (`ff_n40C_1v95`) and an SS-at-−40 °C file (`ss_n40C_1v40`); the setup-worst `ss_100C_1v60` file is NOT local. Run every corner whose .lib you actually have, state explicitly in the QoR report which corners were and were not analysed, label any partial-corner result and flag the `func_ss` local gap as a risk to the human. Never claim "only TT exists" — that conflates local file presence with PDK corner availability.
 
 **For production flows**: All corners must meet targets simultaneously. A netlist that passes SS but blows hold at FF is not a passing netlist.
 

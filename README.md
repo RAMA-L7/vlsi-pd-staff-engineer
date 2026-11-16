@@ -24,7 +24,7 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 
 **Framework Scope**: Sky130 HD ASIC physical design flow from RTL to GDSII, with two independently configurable designs (test_counter and soc_ctrl), negative-test fault detection, and reproducible validation.
 
-**Current Execution Status**: Framework is fully configured and verified via prior runs (Phase 14: two reproducible runs A&B, 88/88 acceptance checks, 20/20 identical artefacts). Live regression execution is blocked by a Code Mode runtime shell integration issue (persistent since Phase 14, November 2026). All configuration, documentation, and prior evidence are preserved and independently verifiable.
+**Current Execution Status**: Framework is fully configured and verified. The documented baseline command (`python -m assistant baseline`) executes the full regression on `test_counter` — 16/16 stages PASS, 92 checks, reproduced twice with byte-identical netlists; live LEC and STA gates also pass. `soc_ctrl` is configured but was not executed in this pass. A Code Mode runtime shell integration issue was historically reported during Phases 14–17A (see `docs/VALIDATION.md`); that historical blocker no longer applies to the documented baseline command path. All configuration, documentation, and prior evidence are preserved and independently verifiable.
 
 **Evidence directories**: `D:\audit\phase14_automated_regression_20261112\`, `D:\audit\phase15_multidesign_validation_20261114\`, `D:\audit\phase16_execution_closure_20261114\`
 
@@ -309,7 +309,7 @@ The engineering workflow follows: agent → skill → inputs → EDA tool execut
 - `-Design soc_ctrl` parameter operational
 - Stage scripts read `$env:REG_DESIGN` for design selection
 - **Do NOT claim** any of the above results for soc_ctrl
-- Full regression execution is blocked by the Code Mode shell integration issue
+- Full regression not executed for `soc_ctrl` in this pass; the baseline command path works for `test_counter` (the historically reported shell blocker no longer applies)
 - RTL + SDC created for framework compatibility; does not claim gate-level equivalence with upstream `D:\tools\eda-work\soc_ctrl_stub.v`
 
 **Clear Distinction**: Results attributed to test_counter are from verified Phase 14 execution. soc_ctrl results are only from configuration; no live execution claims are made.
@@ -759,4 +759,4 @@ This README has been upgraded from a general project introduction into a profess
 - **K**: Limitations and roadmap - resolved shell blocker, pending soc_ctrl full regression, current single-design physical signoff evidence, what has been demonstrated through actual runs
 - **L**: Quick start — prerequisites and setup with configurable machine-specific paths; no credentials or private environment information exposed
 
-All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Stale shell-blocker claims have been removed; current run evidence is in docs/reviews/remediation-report.md. Design-specific results are correctly attributed to test_counter (Phase 14 verified execution) vs. soc_ctrl (Phase 17B configured only).
+All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Present-tense "shell blocked" claims have been removed; the Code Mode shell issue is documented only as historical context (Phases 14–17A). The documented baseline command runs today (16/16 stages PASS on test_counter); current run evidence is in `docs/reviews/remediation-report.md` and the post-publication validation record (`docs/reviews/post-publication-validation.md`). Design-specific results are correctly attributed to test_counter (verified execution) vs. soc_ctrl (configured only; not executed in this pass).

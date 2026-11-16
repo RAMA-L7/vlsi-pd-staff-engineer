@@ -234,7 +234,7 @@ Missing any item = handoff is incomplete = next stage cannot start.
   - Phase 2 (root cause identification): five-level backward trace through PD stages; cost/risk assessment for each candidate; presented to human with options
   - Phase 3 (targeted fix selection): specific fix recommended based on root cause; cost/risk trade-off; human decides which level to fix
   - Phase 4 (verified resolution): fix applied and re-checked; all three gates (QoR, LEC, low power) must pass before proceeding; if still failing, escalate again
-- **Three-Fix Rule**: If 3 targeted ECOs on the same failure show diminishing returns (200ps → 100ps → 50ps per fix), the problem is structural and upstream of where you're fixing; STOP and escalate to human
+- **Three-Fix Rule (heuristic)**: If 3 targeted ECOs on the same failure show diminishing returns, STOP and REASSESS hypotheses, inputs, constraints and protected metrics. "Upstream/structural" is a hypothesis requiring a discriminating test, not a conclusion.
 - **Do NOT**: Guess. Apply random fixes. Skip the four-phase protocol. Claim PASS without fresh evidence.
 - **Validated Process (Phase 14–16)**: Root causes from Phase 13 encoded in Phase 14: PDN-0185, n-well tie (66 well ties on 50-site grid, 23 um, bottom row only first tie), structurally wrong LVS reference via `write_cdl -masters` (_unconnected_N side-effect); reference generated from routed ODB ITerm → net mapping instead
 
@@ -322,7 +322,7 @@ Framework supports two independently configured designs:
 | Design | RTL Source | SDC | Top Module | Artifact Prefix | Status |
 |---|---|---|---|---|---|
 | **test_counter** | `examples/test-counter/rtl/test_counter.v` | `examples/test-counter/rtl/test_counter.sdc` | counter | `test_counter` | ✅ Validated (Phase 14: REPRODUCIBLE) |
-| **soc_ctrl** | `examples/soc_ctrl/rtl/soc_ctrl.v` | `examples/soc_ctrl/rtl/soc_ctrl.sdc` | soc_ctrl | `soc_ctrl` | ⚙️ Integrated; full regression pending (shell blocked) |
+| **soc_ctrl** | `examples/soc_ctrl/rtl/soc_ctrl.v` | `examples/soc_ctrl/rtl/soc_ctrl.sdc` | soc_ctrl | `soc_ctrl` | ⚙️ Integrated; full regression not executed in this pass (baseline path works for test_counter) |
 
 **Design Config** (`$DesignConfig` hashtable in `run_regression.ps1`) maps each design name to:
 
@@ -521,7 +521,7 @@ Per-stage evidence includes:
 
 - **Tool exit code 0 alone is never sufficient** for PASS classification
 - **Fresh execution** each time; cached results are not trusted
-- **Three-fix rule**: If 3 ECOs on the same failure show diminishing returns, stop and trace root cause upstream
+- **Three-fix rule (heuristic)**: If 3 ECOs on the same failure show diminishing returns, stop and reassess hypotheses/inputs/constraints; "upstream" is a hypothesis to test, not a foregone conclusion.
 - **Escalation**: Forensic debugger invoked on any gate failure; five-level root cause trace presented to human with cost/risk assessment
 - **Do not trust self-reports**: The QoR reviewer reads raw reports, not the agent's summary
 - **Do not claim PASS on partial output**: `truncated == true ⇒ INCONCLUSIVE`
@@ -598,7 +598,7 @@ flowchart TD
 | Tool exit code 1 + output capture failed | BLOCKED | Investigate shell/environment; do not claim FAIL |
 | Fresh execution required, used cached | INCONCLUSIVE | Re-run tool fresh; do not trust cache |
 | 3 ECOs on same failure, diminishing returns | ERROR | Escalate via three-fix rule; five-level root cause trace |
-| Shell tool non-functional | BLOCKED | Document; do not claim execution results; all work via read/write/edit |
+| Environment prevents tool execution (e.g. shell non-functional) | BLOCKED | Document; do not claim execution results; fall back to read/write/edit until resolved |
 | Design rules violated (DRV > 0) | FAIL | Do not proceed; escalate to human; do not ship |
 
 ### Validation Pipeline per Stage
@@ -681,21 +681,21 @@ JSON Report (schema_version, stage status, per-check results, artifact paths, ha
     ├──────────────────────────────────────────────────────┐
     ↓                                                   ↓
 Cross-Run Comparison (Run A vs Run B)                   GitHub Publication
-(20/20 artefacts identical, GDSII timestamps stripped)   (procedures documented; shell blocked)
+(20/20 artefacts identical, GDSII timestamps stripped)   (implementation published at 6c4a264 on origin/main)
 ```
 
 ### Architecture Principles
 
 1. **Evidence before claims** — Every signoff check runs fresh; "it passed earlier" is not evidence
 2. **Stage gates** — No stage proceeds without QoR review + LEC + low power verification passing
-3. **Three-fix rule** — If 3 ECOs don't resolve a failure, stop and trace the root cause upstream
+3. **Three-fix rule (heuristic)** — After 3 failed ECOs, stop and REASSESS hypotheses, inputs and constraints/protected metrics. "Upstream" is a hypothesis requiring a discriminating test, not a foregone conclusion.
 4. **No partial PASS** — `truncated == true ⇒ INCONCLUSIVE`; tool exit code alone is never sufficient
 5. **Fresh execution** each time; cached results not trusted
 6. **Design isolation** — Artifact prefixes prevent cross-design contamination
 7. **Machine-readable reporting** — JSON reports with schema_version, per-stage status, per-check results, artifact paths, and hashes
 8. **Design configuration via `-Design` parameter** — `REG_DESIGN` propagated to all stage scripts
 9. **Tool availability documented** — Per EDA_TOOL_REGISTRY.md; WSL-dependent tools require WSL invocation
-10. **Known limitations disclosed** — No exaggerated claims; framework configured but execution blocked by shell issue
+10. **Known limitations disclosed** — No exaggerated claims; test_counter baseline executed (16/16 stages PASS); soc_ctrl configured, not executed in this pass
 
 ---
 
@@ -735,17 +735,17 @@ Cross-Run Comparison (Run A vs Run B)                   GitHub Publication
 1. **Evidence over claims** — Every QoR number must come from a tool run in this session, not from memory or a previous run
 2. **Reports drive decisions** — Read reports before optimizing; do not guess what the critical path is — look
 3. **Multi-corner is mandatory** — A netlist that passes one corner and fails another is a failing netlist; check all available corners
-4. **Three-fix rule** — If 3 optimization attempts do not improve WNS by more than 5%, stop and escalate; the problem is upstream of synthesis
+4. **Three-fix rule (heuristic)** — After 3 attempts that do not improve WNS by >5%, stop and escalate; reassess hypotheses and inputs rather than assuming the problem is upstream of synthesis
 5. **Cheapest fix first** — Try restructuring before pipelining; try upsizing before replication; every optimization has a cost — pick the one with the smallest area/power penalty
 6. **Fresh execution** each time; cached results not trusted
 7. **Do not trust self-reports** — The QoR reviewer reads raw reports, not the agent's summary
 8. **Do not claim PASS on partial output** — `truncated == true ⇒ INCONCLUSIVE`
 9. **Design isolation** — Artifact prefixes prevent cross-design contamination
-10. **Known limitations disclosed** — No exaggerated claims; framework configured but execution blocked by shell issue
+10. **Known limitations disclosed** — No exaggerated claims; test_counter baseline executed (16/16 stages PASS); soc_ctrl configured, not executed in this pass
 
 ---
 
-## 📞 Next Steps (When Shell Tool Recovered)
+## 📞 Next Steps / Future Work (baseline execution already demonstrated)
 
 1. **Run test_counter regression**: `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter`
 2. **Run soc_ctrl regression**: `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl`

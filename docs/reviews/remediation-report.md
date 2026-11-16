@@ -167,12 +167,14 @@ Verified **not** demonstrated by this repository (also in README "NOT implemente
 - **Doc fixes are review-based:** findings G, H, L, M corrections are prose — guarded only by review, not by an executable doc-lint (except README claims + tracker presence tests).
 - **Gate controller scope:** it governs only checks wired to it; the prompt-level process for humans/LLMs remains and is documented as advisory.
 
-## 7. Reviewer checklist
+## 7. Reviewer checklist (for the reviewer — not a claim of completion)
+
+> These boxes are intentionally left unchecked: this is a checklist for the reviewer to work through, not an assertion that each item was verified. Independent post-publication verification results (what was actually re-run and observed) are recorded in `docs/reviews/post-publication-validation.md` and `docs/reviews/post-publication-remediation.md` §2–§6; this report does not claim those results itself.
 
 - [ ] `docs/reviews/initial-review.md` faithfully mirrors the external review (A–N).
 - [ ] `docs/reviews/remediation-tracker.md` maps every finding → severity/files/status/remediation/implementation/tests/limitations.
 - [ ] Re-run `test_framework.sh` in WSL → expect 47/0/0.
-- [ ] Re-run `python -m pytest tests\ -q` → expect 97 passed.
+- [ ] Re-run `python -m pytest tests\ -q` → expect the current suite count (130 passed at last verification).
 - [ ] Re-run `python -m assistant baseline --run-id <new>` → expect 16/16 PASS; diff `synth/*.v` hashes against `reproducibility_r1_vs_r2.json`.
 - [ ] `python -m assistant validate-pvt --targets synthesis_targets.json …` → PASS.
 - [ ] `python -m assistant gate-bypass-attempt …` → REFUSED (both modes).
@@ -183,5 +185,5 @@ Verified **not** demonstrated by this repository (also in README "NOT implemente
 ## 8. Path to review handoff
 
 1. This report + tracker + initial review are the review package (`docs/reviews/`).
-2. Changes are **local/uncommitted** in `D:\audit\wt_pd_assistant` — publication (branch + PR to `RAMA-L7/vlsi-pd-staff-engineer`) awaits explicit instruction; the preserved reference checkout is `D:\audit\repo`.
+2. The implementation described in this report was published at commit `6c4a2640b95e869fe3f0c1367dca5aaf9626f3fc` on `origin/main` of `RAMA-L7/vlsi-pd-staff-engineer`. The fresh validation clone (`D:\audit\validate_pd_20261116`) carries local, uncommitted follow-up remediation addressing the post-publication validation findings (`docs/reviews/post-publication-validation.md`); no new commit, push, PR or publication has been made in this pass. The preserved reference checkout is `D:\audit\repo`.
 3. Evidence directory must be archived alongside any PR description (it is intentionally outside the repo so no generated artifacts are committed; `regression/workspace/` is git-ignored).

@@ -62,9 +62,23 @@ class BaselineManifest:
     distinctions: dict = field(default_factory=dict)
     unsupported: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Regression invocation could not be started (``exit_code`` stays None).
+    start_failed: bool = False
+    #: Regression invocation hit the wall-clock timeout (``exit_code`` stays None).
+    timed_out: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def completed_ok(self) -> bool:
+        """True only when the regression actually ran and exited with code 0.
+
+        A ``None`` exit code (timeout, spawn failure or a deliberate dry run)
+        is *never* a successful completion, even though it is recorded
+        honestly in ``exit_code``.
+        """
+        return not self.start_failed and not self.timed_out and self.exit_code == 0
 
 
 #: What this baseline does NOT demonstrate (never claim these).
@@ -104,6 +118,74 @@ DISTINCTIONS = {
 
 def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Shell-facing exit codes for a baseline that never genuinely completed.  The
+# manifest keeps ``exit_code = None`` in these cases (the tool never exited),
+# but automation must not read that as success.
+BASELINE_TIMEOUT_EXIT = 124
+BASELINE_SPAWN_EXIT = 125
+BASELINE_INCOMPLETE_EXIT = 1
+
+_WSL_MNT_RE = re.compile(r"^/mnt/([A-Za-z])/(.*)$")
+
+
+def baseline_exit_signal(manifest: BaselineManifest) -> int:
+    """Return the shell exit code that faithfully reports the baseline outcome.
+
+    ``0`` only when the regression actually ran and exited 0; otherwise a
+    conventional non-zero code (124 timeout, 125 spawn failure, 1 other
+    incomplete).  The manifest's ``exit_code`` is left untouched.
+    """
+    if manifest.timed_out:
+        return BASELINE_TIMEOUT_EXIT
+    if manifest.start_failed:
+        return BASELINE_SPAWN_EXIT
+    if manifest.completed_ok:
+        return 0
+    if manifest.exit_code is not None:
+        return manifest.exit_code
+    return BASELINE_INCOMPLETE_EXIT
+
+
+def normalize_wsl_path(path: str) -> str:
+    """Map a WSL ``/mnt/<letter>/...`` path to a native Windows path.
+
+    Python on Windows cannot resolve ``/mnt/d/...``, so such a path (as
+    recorded by the regression's WSL-side checks) cannot be hashed as-is.
+    This helper converts it to ``<letter>:/...`` for on-disk lookups only.
+
+    * no-op on non-Windows hosts;
+    * no-op for native Windows paths and for paths that are not WSL mounts;
+    * the drive letter is matched case-insensitively.
+
+    The caller must keep the recorded path verbatim.
+    """
+    if os.name != "nt":
+        return path
+    m = _WSL_MNT_RE.match(path)
+    if not m:
+        return path
+    return f"{m.group(1).upper()}:/{m.group(2)}"
+
+
+def _hash_view_artifact(path: str) -> str:
+    """Hash a recorded view path; translate WSL mount paths on Windows only.
+
+    The caller keeps ``path`` verbatim in the manifest.  Returns
+    ``"<missing>"`` only when the file truly cannot be found or read.
+    """
+    candidates = [path]
+    normalized = normalize_wsl_path(path)
+    if normalized != path:
+        candidates.append(normalized)
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            try:
+                return sha256_file(candidate)
+            except OSError:
+                return "<missing>"
+    return "<missing>"
 
 
 def collect_stage_results(run_dir: str) -> tuple[list[StageRecord], dict, dict]:
@@ -261,6 +343,10 @@ def run_baseline(
     with open(log_path, "wb") as logf:
         logf.write(f"$ {' '.join(argv)}\n".encode())
         logf.flush()
+        # run_regression.ps1 defaults $Repo to an unrelated checkout; point it
+        # at the validated root so the report's git provenance is faithful.
+        env = os.environ.copy()
+        env["REG_REPO"] = root
         try:
             proc = subprocess.run(
                 argv,
@@ -269,13 +355,16 @@ def run_baseline(
                 stderr=subprocess.STDOUT,
                 timeout=timeout_s,
                 shell=False,
+                env=env,
             )
             manifest.exit_code = proc.returncode
         except subprocess.TimeoutExpired:
             manifest.exit_code = None
+            manifest.timed_out = True
             manifest.notes.append(f"baseline timed out after {timeout_s}s")
         except OSError as exc:
             manifest.exit_code = None
+            manifest.start_failed = True
             manifest.notes.append(f"failed to start regression: {exc}")
 
     # Locate the run directory the regression created (most recent run_*).
@@ -299,7 +388,7 @@ def run_baseline(
         stages_rec, views, physical = collect_stage_results(run_dir)
         manifest.stages = [asdict(s) for s in stages_rec]
         manifest.views = {
-            k: {"path": v, "sha256": sha256_file(v) if os.path.isfile(v) else "<missing>"}
+            k: {"path": v, "sha256": _hash_view_artifact(v)}
             for k, v in views.items()
         }
         manifest.physical_checks = physical
@@ -369,13 +458,27 @@ def main(argv: list[str] | None = None) -> int:
         args.repo_root or _repo_root(), "regression", "evidence"
     )
     path = save_manifest(manifest, os.path.join(out_dir, "baseline_manifest.json"))
-    print(json.dumps({"manifest": path, "exit_code": manifest.exit_code,
-                      "run_dir": manifest.run_dir,
-                      "stages_recorded": len(manifest.stages),
-                      "notes": manifest.notes}, indent=2))
-    if manifest.exit_code not in (0, None):
-        return manifest.exit_code
-    return 0
+    signal = baseline_exit_signal(manifest)
+    if signal == 0:
+        status = "PASS"
+    elif manifest.timed_out:
+        status = "TIMEOUT"
+    elif manifest.start_failed:
+        status = "SPAWN_FAILED"
+    else:
+        status = "INCOMPLETE"
+    print(json.dumps({
+        "manifest": path,
+        "exit_code": manifest.exit_code,
+        "run_dir": manifest.run_dir,
+        "stages_recorded": len(manifest.stages),
+        "notes": manifest.notes,
+        "timed_out": manifest.timed_out,
+        "start_failed": manifest.start_failed,
+        "status": status,
+        "return_code": signal,
+    }, indent=2))
+    return signal
 
 
 if __name__ == "__main__":  # pragma: no cover

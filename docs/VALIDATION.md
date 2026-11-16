@@ -29,7 +29,7 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 | Seven Negative Tests Detected | N1–N7 all DETECTED independently | Phase 15 |
 | Multi-Design Framework Integration | `-Design` parameter; `test_counter` + `soc_ctrl` | Phase 15 |
 | REPRODUCIBLE Classification Maintained for test_counter | Across Phase 14–17A | Phase 14–17A |
-| Shell Failure Diagnosis and Documentation | Code Mode runtime shell integration issue | Phase 16–17A |
+| Shell Failure Diagnosis and Documentation (historical, Phase 16–17A) | Code Mode runtime shell issue — resolved for the documented baseline command path | Phase 16–17A |
 
 ### 🏆 Phase-by-Phase Milestones
 
@@ -96,13 +96,13 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
   - Evidence: `D:\\audit\\phase15_multidesign_validation_20261114\\`
 
 #### Phase 16: Shell Failure Diagnosis and Documentation; Framework Modifications Documented; GitHub Publication Procedures Prepared
-- **Achievement**: Shell failure fully diagnosed (Code Mode runtime shell integration issue, persistent since Phase 14); all framework modifications documented; GitHub publication procedures prepared; 7 reports created
+- **Achievement**: Shell failure fully diagnosed (historical Code Mode runtime shell integration issue, Phase 14–17A; no longer applies to the documented baseline command path); all framework modifications documented; GitHub publication procedures prepared; 7 reports created
 - **Status**: ✅ Complete
 - **Details**:
-  - Primary blocker: Code Mode runtime shell integration issue (exit code 1, no output)
+  - Primary blocker (historical, Phase 16–17A): Code Mode runtime shell integration issue (exit code 1, no output); resolved for the documented baseline command path
   - Diagnosed across PHASE16_SHELL_DIAGNOSIS.md files (4 files in phase17a_execution_recovery_20261114)\n  - Forensic investigation; root cause identified
   - Framework modifications documented (all via read/write/edit tools)
-  - GitHub publication procedures prepared (not executable without shell)
+  - GitHub publication procedures prepared (historically not executable at the time; publication later completed at 6c4a264)
   - Evidence catalog complete across Phases 14–16
   - 7 Phase 14–16 reports created
 
@@ -117,13 +117,13 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
   - VALIDATION.md: engineering milestones Phases 1–17
   - DESIGN.md: test_counter and soc_ctrl documentation
 
-#### Phase 17A: Execution Environment Forensic Investigation and Recovery (Root Cause: Code Mode Runtime Shell Integration Issue)
+#### Phase 17A (historical): Execution Environment Forensic Investigation and Recovery (Root Cause: Code Mode Runtime Shell Integration Issue)
 - **Achievement**: Root cause identified; forensic investigation completed; 4 recovery report files
 - **Status**: ✅ Complete
 - **Details**:
-  - Root cause: Code Mode runtime shell integration issue (persistent since Phase 14, November 2026)
-  - All shell commands return exit code 1 with no stdout/stderr
-  - User-level environment modifications cannot resolve; Code Mode-level fix required
+  - Root cause (historical, Phase 14–17A): Code Mode runtime shell integration issue; no longer applies to the documented baseline command path
+  - At the time, shell commands returned exit code 1 with no stdout/stderr
+  - At the time, user-level environment modifications could not resolve it; a Code Mode-level fix was assumed necessary
   - 4 forensic report files created documenting investigation
 
 #### Phase 17B: Professional Repository Documentation and GitHub Release Preparation
@@ -133,7 +133,7 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
   - README.md: Professional rewrite with project introduction, engineering objectives, key capabilities, architecture overview, 9 agents, 10 skills, supported EDA tools, Sky130 HD technology integration, regression architecture, supported designs, quick-start instructions, configuration instructions, validation status, known limitations, roadmap
   - ARCHITECTURE.md: Full architecture documentation with Mermaid diagrams; 9 agents with responsibilities; 10 skills with execution procedures; EDA tool integration; design configuration; regression execution; acceptance engine; machine-readable reporting; evidence generation; error handling
   - REGRESSION.md: run_regression.ps1 documentation; -Design parameter; test_counter and soc_ctrl configuration; 15 stages with acceptance checks; JSON reporting; artifact organization; negative tests; failure classification; reproducibility; clear distinction between configured capabilities and executed validation
-  - VALIDATION.md: Engineering milestones Phases 1–17; evidence-based status labels; shell limitation disclosed; Do NOT claim soc_ctrl full-flow validation
+  - VALIDATION.md: Engineering milestones Phases 1–17; evidence-based status labels; historical shell limitation disclosed (resolved for baseline path); Do NOT claim soc_ctrl full-flow validation
   - DESIGN.md: test_counter (validated baseline) and soc_ctrl (integrated, pending execution) documented separately; RTL provenance; SDC; regression integration; outstanding validation; distinguish locally created RTL and SDC from upstream source material
 
 ### 📋 Validation Status Summary
@@ -150,45 +150,49 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 | **Reproducible Baseline** | ✅ REPRODUCIBLE (Phase 14) | Two runs A&B; 88/88 checks; 20/20 artefacts identical |
 | **Negative Test Suite** | ✅ Configured and verified | N1–N7 all DETECTED; N7 fix in `15a_lvs_refcdl.tcl` |
 | **soc_ctrl Integration** | ✅ Framework configured | RTL + SDC created; full regression pending execution |
-| **Shell Execution Blocker** | ⚠️ BLOCKED | Code Mode runtime issue; persistent since Phase 14 |
+| **Shell Execution Blocker (historical)** | ⚠️ Resolved for baseline | Historically reported Code Mode runtime issue (Phase 14–17A); documented baseline command now executes 16/16 stages PASS |
 
 #### Execution Status
 | Design | Regression Status | Evidence |
 |---|---|---|
-| **test_counter** | REPRODUCIABLE baseline (Phase 14) | Two runs A&B OVERALL PASS; 88/88 checks; 20/20 artefacts identical |
-| **soc_ctrl** | Configured; full regression pending execution | Framework integration verified; RTL + SDC created; stage scripts design-aware |
+| **test_counter** | REPRODUCIABLE baseline (Phase 14 + 2026-11-16) | Two runs A&B OVERALL PASS; 88/88 checks; 20/20 artefacts identical; baseline command 16/16 stages PASS, 92 checks |
+| **soc_ctrl** | Configured; full regression not executed in this pass | Framework integration verified; RTL + SDC created; stage scripts design-aware |
 
-#### Current Shell Status
-- **Shell tool**: Non-functional (exit code 1, no output) — persistent since Phase 14 early November 2026
-- **Live regression execution**: BLOCKED on both designs
-- **Git operations**: BLOCKED (status, commit, push)
-- **DRC/LVS/STA verification**: BLOCKED on both designs
-- **GDSII generation**: BLOCKED
-- **Negative test suite**: BLOCKED
-- **Remote GitHub publication**: BLOCKED (procedures documented; execution blocked)
+#### Current Execution Status
+- **Shell tool**: functional for the documented baseline command path (the reported Code Mode issue is a historical Phase 14–17A record)
+- **Live regression execution**: test_counter baseline executed — 16/16 stages PASS, 92 checks, reproduced twice; soc_ctrl not executed in this pass
+- **Git operations**: available (local validation edits uncommitted; implementation published at 6c4a264 on origin/main)
+- **DRC/LVS/STA verification**: executed for test_counter as baseline stages (results in `docs/reviews/post-publication-validation.md`)
+- **GDSII generation**: executed for test_counter as a baseline stage
+- **Negative test suite**: framework script passes 47/0/0; unit and failure-injection suites pass
+- **Remote GitHub publication**: implementation published at 6c4a264; no new publication in this validation pass
 
-### 🔍 Shell Execution Blocker — Detailed Disclosure
+### 🔍 Shell Execution Blocker — Historical Disclosure (Phases 14–17A)
 
-**Issue**: Code Mode runtime shell integration issue — persistent since Phase 14 early November 2026
+> **Status (2026-11-16):** the blocker below is a historical record. It no longer applies to the documented baseline command path, which executes the full test_counter regression (16/16 stages PASS, 92 checks). See `docs/reviews/post-publication-validation.md`.
 
-**Symptoms**:
-- All shell commands return exit code 1 with no stdout/stderr output
-- Affects: regression execution, git operations, WSL commands, negative test suite
-- Primary blocker for all live execution and GitHub publication
+**Issue (historical, Phase 14–17A)**: Code Mode runtime shell integration issue — reported from Phase 14 onward; resolved for the documented baseline command path
 
-**Root Cause**: Code Mode runtime-level shell integration issue; user-level PATH, environment variable, or WSL configuration changes cannot resolve this structural issue
+**Symptoms (historical, at the time)**:
+- Shell commands returned exit code 1 with no stdout/stderr output
+- Affected: regression execution, git operations, WSL commands, negative test suite
+- Was the primary blocker for live execution and GitHub publication at the time
+
+**Root Cause (historical)**: Code Mode runtime-level shell integration issue as reported at the time; no longer applies to the documented baseline command path
 
 **Workaround**: All Phase 17B work completed via `read`/`write`/`edit` tools; all evidence preserved; framework configuration verified via file inspection
 
-**Impact**:
-- Live regression execution blocked on both designs (test_counter, soc_ctrl)
-- DRC, LVS, multi-corner STA not live-executed in Phase 17B
-- GDSII generation and verification blocked
-- Git operations (status, commit, push) blocked
-- Negative test suite execution blocked
-- Remote GitHub publication blocked (procedures documented for when shell recovers)
+**Impact (historical, at the time):**
+- Live regression execution was reported blocked on both designs
+- DRC, LVS, multi-corner STA were not live-executed in Phase 17B
+- GDSII generation and verification were reported blocked
+- Git operations were reported blocked
+- Negative test suite execution was reported blocked
+- Remote GitHub publication was reported blocked
 
-**When Shell Recovers**:
+**Current (2026-11-16 validation):** the documented baseline command executes the full test_counter regression (16/16 stages PASS, 92 checks, byte-identical netlists) and live LEC/STA gates pass; the historical blocker no longer applies. soc_ctrl was simply not executed in this pass.
+
+**Recovery actions (historical plan; baseline recovery achieved):**
 1. `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter` → verify REPRODUCIBLE baseline
 2. `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl` → verify all 15 stages
 3. Git commit and push to remote: `git push origin feature/F-01-claude-agent-discovery`
@@ -201,8 +205,8 @@ MIT — See LICENSE file in repository root.
 
 ### 📧 Contact & Support
 
-This framework is maintained as part of the VLSI Physical Design Staff Engineer workflow. For questions about framework configuration, documentation, or the shell execution blocker, refer to the evidence documents under `D:\\audit\\phase14_automated_regression_20261112\\` or the Phase 17A forensic investigation under `D:\\audit\\phase17a_execution_recovery_20261114\\`.
+This framework is maintained as part of the VLSI Physical Design Staff Engineer workflow. For questions about framework configuration, documentation, or the historically reported shell execution blocker, refer to the evidence documents under `D:\\audit\\phase14_automated_regression_20261112\\` or the Phase 17A forensic investigation under `D:\\audit\\phase17a_execution_recovery_20261114\\`.
 
-**Shell blocker support**: Code Mode runtime issue; requires Code Mode support team intervention at the runtime level. User-level PATH, environment variable, or WSL configuration changes cannot resolve this structural issue.
+**Historical shell blocker note**: a Code Mode runtime issue was reported in Phases 14–17A; it no longer affects the documented baseline command path, which executes 16/16 stages PASS on test_counter.
 
 ---\n*Validation Documentation — feature/F-01-claude-agent-discovery — Multi-Design v2.0*\n*Generated: 2026-11-14 — All milestones evidence-based; verified via read-only file inspection across Phases 1–17A*]

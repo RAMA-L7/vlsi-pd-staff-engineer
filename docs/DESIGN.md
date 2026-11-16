@@ -98,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 #### Status
 **Integrated second design** — Full regression pending execution. Framework configured; `-Design soc_ctrl` parameter operational; stage scripts design-aware; RTL + SDC created for Phase 15 compatibility.
 
-**Do NOT claim**: DRC, LVS, or timing signoff for soc_ctrl. Full regression execution is blocked by the Code Mode shell integration issue.
+**Do NOT claim**: DRC, LVS, or timing signoff for soc_ctrl. Full regression was not executed for soc_ctrl in this pass (the historically reported Code Mode shell blocker no longer applies to the baseline command path, which runs test_counter).
 
 #### Provenance
 - **RTL Source**: `examples/soc_ctrl/rtl/soc_ctrl.v` (locally created for framework integration)
@@ -160,9 +160,9 @@ set_max_fanout 30 [current_design]
 | Stage scripts design-aware via `$Top = $env:REG_DESIGN` | ✅ Configured |
 | Design config in `$DesignConfig` hashtable | ✅ Operational |
 | Separate workspace (`workspace/run_soc_ctrl_*`) | ✅ Configured |
-| Full regression NOT yet executed | ⚠️ Shell blocked |
+| Full regression NOT executed in this pass | ⚠️ Not run (baseline design was test_counter) |
 
-#### Outstanding Validation (Pending Shell Recovery)
+#### Outstanding Validation (Not Executed in This Pass)
 | Stage | Status | Notes |
 |---|---|---|
 | **Synthesis (stage 01)** | ⚙️ Configured | Framework configured, not live-executed |
@@ -226,7 +226,7 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 - Negative test suite N1–N7 configured and verified in Phase 15
 - N7 fix (net swap in `15a_lvs_refcdl.tcl`) verified in file content inspection
 - All 7 tests DETECTED when injected into test_counter flow
-- soc_ctrl-specific negative test execution pending shell recovery
+- soc_ctrl-specific negative test execution not performed in this pass
 
 ---
 
@@ -246,7 +246,7 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Stages 01_synthesis
 | **LVS Verified** | PASS (Phase 13, official lylvs) | Not executed for soc_ctrl |
 | **GDSII Generated** | PASS (Phase 9–13) | Not executed for soc_ctrl |
 | **Reproducible** | ✅ REPRODUCIBLE (two runs A&B) | N/A (single run configured) |
-| **Shell Execution** | Blocked since Phase 14 | Blocked; configured only |
+| **Shell Execution** | Historical blocker (Phase 14–17A); resolved for baseline | test_counter baseline executed; soc_ctrl configured only |
 
 ### Cross-Design Isolation
 - **Artifact prefixes** prevent mixing (`test_counter` vs `soc_ctrl`)

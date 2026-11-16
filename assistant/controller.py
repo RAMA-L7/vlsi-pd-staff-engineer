@@ -113,7 +113,13 @@ class GateDecision:
         return asdict(self)
 
 
-def _validate_applicability_reason(reason: str) -> str:
+def validate_applicability_reason(reason: str) -> str:
+    """Validate + normalize a NOT_APPLICABLE reason.
+
+    This is the single validator for the NA-RULE registry and substantive-
+    reason rules. It is invoked from ``record_evidence`` so *every* recording
+    boundary (direct API, CLI, ``mark_not_applicable``) is covered.
+    """
     text = (reason or "").strip()
     if len(text) < MIN_REASON_LEN:
         raise ApplicabilityError(
@@ -137,6 +143,10 @@ def _validate_applicability_reason(reason: str) -> str:
             "applicability reason must justify the rule, not only name it"
         )
     return text
+
+
+# Backwards-compatible private alias (kept so existing callers do not break).
+_validate_applicability_reason = validate_applicability_reason
 
 
 class GateController:
@@ -202,6 +212,15 @@ class GateController:
             raise StateError(
                 "run is CANCELLED; restart() before recording new evidence"
             )
+        # Central NOT_APPLICABLE validation: every recording boundary must
+        # carry a valid NA-RULE reason. Validate BEFORE mutating state so an
+        # invalid/empty reason is never persisted and can never influence a
+        # gate decision.
+        if ev.status is Status.NOT_APPLICABLE:
+            ev.applicability_reason = validate_applicability_reason(
+                ev.applicability_reason
+            )
+            ev.reason = ev.applicability_reason
         # Bind evidence to the currently registered inputs (only labels that
         # were registered at record time become staleness anchors).
         if not ev.input_hashes:
@@ -251,11 +270,9 @@ class GateController:
 
     # -- applicability & waivers ---------------------------------------------
     def mark_not_applicable(self, ev: Evidence) -> Evidence:
+        # Set the status, then delegate to record_evidence(), which applies
+        # the single shared NA validator. No separate/divergent validation.
         ev.status = Status.NOT_APPLICABLE
-        ev.applicability_reason = _validate_applicability_reason(
-            ev.applicability_reason
-        )
-        ev.reason = ev.applicability_reason
         return self.record_evidence(ev)
 
     def add_waiver(self, waiver: Waiver) -> Waiver:

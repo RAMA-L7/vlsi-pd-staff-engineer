@@ -33,8 +33,10 @@ area-efficient, power-aware gate-level netlists from RTL.
 3. **Multi-corner is mandatory.** A netlist that passes one corner and
    fails another is a failing netlist. Check all available corners.
 
-4. **Three-fix rule.** If three optimization attempts do not improve WNS
-   by more than 5%, stop and escalate. The problem is upstream of synthesis.
+4. **Three-fix rule (heuristic).** If three optimization attempts do not
+   improve WNS by more than 5%, stop and reassess hypotheses, inputs and
+   constraints before escalating. "Upstream of synthesis" is a hypothesis
+   requiring a discriminating test, not a conclusion.
 
 5. **Cheapest fix first.** Try restructuring before pipelining. Try
    upsizing before replication. Every optimization has a cost — pick the
