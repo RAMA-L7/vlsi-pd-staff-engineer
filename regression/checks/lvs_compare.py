@@ -29,14 +29,11 @@ Machine-readable keys (consumed by checks/acceptance.py):
     UNMATCHED_SUBCIRCUITS: <n>
     POWER: <state>
 """
+import json
+import os
 import re
 import sys
 from collections import defaultdict, Counter
-
-EXTRACTED = sys.argv[1]
-SCHEM = sys.argv[2]
-OUTFILE = sys.argv[3] if len(sys.argv) > 3 else None
-TOP = 'TEST_COUNTER'
 
 POWER_MAP = {
     'VGND': 'GLOBAL_GND', 'VNB': 'GLOBAL_GND', 'VSS': 'GLOBAL_GND', 'GND': 'GLOBAL_GND',
@@ -392,7 +389,115 @@ def fanout(circ):
     return d
 
 
-def main():
+# ---------------------------------------------------------------------------
+# Design-independent top-cell resolution.
+#
+# The historical comparator used a hard-coded top-cell name.  That
+# made every other design emit ``TOP CIRCUIT MISSING`` and cascade into false
+# FAILs even when the official KLayout deck reported a genuine match.  The top
+# cell is now derived ONLY from authoritative information available at
+# verification time:
+#   1. env REG_DESIGN (set by the regression controller),
+#   2. the run-dir manifest (<design>_design.cdl, acceptance.json / report.json
+#      "design"),
+#   3. a unique common root-cell detected in BOTH netlists.
+# No design name is hard-coded.  If there is no authoritative hint and
+# detection is ambiguous or yields no common root, the comparison is reported
+# as FAIL / INCONCLUSIVE with rc=1 - never as a PASS.
+# ---------------------------------------------------------------------------
+
+def _clean_name(value):
+    """Normalise a design / top name coming from env, JSON or a file name."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    while len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    if not s:
+        return None
+    return s.upper()
+
+
+def _root_cells(subckts):
+    """Subcircuits that are not instantiated by any other subcircuit.
+
+    In an extracted layout netlist this is the design top.  In a concatenated
+    reference CDL the design top is one of several roots because unused library
+    masters are appended as definitions.  The intersection of the two root sets
+    therefore identifies the design top without assuming any design name.
+    """
+    instantiated = set()
+    for c in subckts.values():
+        for (_inst, cell, _nets) in c['xs']:
+            instantiated.add(str(cell).upper())
+    return {name for name in subckts if str(name).upper() not in instantiated}
+
+
+def _hint_from_run_dir(extracted):
+    """Read the manifest-authored design name for the run being verified.
+
+    The run directory is derived from the extracted netlist path
+    (<run>/15_lvs/15_lvs_extracted.cir).  Returns (name, source) or
+    (None, None).
+    """
+    run = os.path.dirname(os.path.dirname(os.path.abspath(extracted)))
+    ref_names = set()
+    try:
+        for fn in os.listdir(run):
+            if fn.endswith('_design.cdl'):
+                n = _clean_name(fn[:-len('_design.cdl')])
+                if n:
+                    ref_names.add(n)
+    except OSError:
+        pass
+    if len(ref_names) == 1:
+        return ref_names.pop(), 'run-dir:<design>_design.cdl'
+
+    for fname in ('acceptance.json', 'report.json'):
+        try:
+            with open(os.path.join(run, fname), 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+            n = _clean_name(data.get('design')) if isinstance(data, dict) else None
+            if n:
+                return n, 'run-dir:%s:design' % fname
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None, None
+
+
+def resolve_top(lay, sch, extracted):
+    """Return (top, source, ambiguous).
+
+    ``top`` is the upper-case subcircuit name to compare, ``source`` records how
+    it was chosen, and ``ambiguous`` is True only when no authoritative hint
+    existed and auto-detection was ambiguous.  No fall-back design name: an
+    unresolved top must lead to an explicit failure, never a silent PASS.
+    """
+    env_name = _clean_name(os.environ.get('REG_DESIGN'))
+    if env_name:
+        return env_name, 'env:REG_DESIGN', False
+
+    hint, source = _hint_from_run_dir(extracted)
+    if hint:
+        return hint, source, False
+
+    common = _root_cells(lay) & _root_cells(sch)
+    if len(common) == 1:
+        return common.pop(), 'netlist-top-cell-detection', False
+    if len(common) > 1:
+        return None, 'netlist-top-cell-detection(ambiguous)', True
+    return None, 'unresolved(no-authoritative-hint-and-no-common-root)', True
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) < 2:
+        print("usage: lvs_compare.py <extracted.cir> <reference.cdl> [output.txt]")
+        return 2
+    EXTRACTED = args[0]
+    SCHEM = args[1]
+    OUTFILE = args[2] if len(args) > 2 else None
+
     lay = parse_spice(EXTRACTED)
     sch = parse_spice(SCHEM)
 
@@ -404,13 +509,32 @@ def main():
     out.append("   subcircuits: %d" % len(sch))
     out.append("")
 
-    lt = lay.get(TOP)
-    st = sch.get(TOP)
-    if lt is None or st is None:
-        out.append("TOP CIRCUIT MISSING (layout=%s schematic=%s)" % (lt is not None, st is not None))
+    top, top_source, ambiguous = resolve_top(lay, sch, EXTRACTED)
+    out.append("LVS_TOP: %s" % (top if top else 'UNRESOLVED'))
+    out.append("LVS_TOP_SOURCE: %s" % top_source)
+
+    if ambiguous:
+        roots = sorted(_root_cells(lay) & _root_cells(sch))
+        out.append("TOP CIRCUIT MISSING (ambiguous-or-unresolved top-cell candidates=%s; source=%s)"
+                   % (roots, top_source))
+        out.append("LVS_VERDICT: INCONCLUSIVE")
         text = '\n'.join(out) + '\n'
         if OUTFILE:
-            open(OUTFILE, 'w').write(text)
+            with open(OUTFILE, 'w', encoding='utf-8') as f:
+                f.write(text)
+        print(text)
+        return 1
+
+    lt = lay.get(top)
+    st = sch.get(top)
+    if lt is None or st is None:
+        out.append("TOP CIRCUIT MISSING (layout=%s schematic=%s requested=%s source=%s)"
+                   % (lt is not None, st is not None, top, top_source))
+        out.append("LVS_VERDICT: FAIL")
+        text = '\n'.join(out) + '\n'
+        if OUTFILE:
+            with open(OUTFILE, 'w', encoding='utf-8') as f:
+                f.write(text)
         print(text)
         return 1
 
@@ -435,8 +559,8 @@ def main():
     out.append("")
 
     # --- transistor-level comparison ----------------------------------------
-    ldev, lnets = flatten(lay, TOP)
-    sdev, snets = flatten(sch, TOP)
+    ldev, lnets = flatten(lay, top)
+    sdev, snets = flatten(sch, top)
     out.append("--- transistor-level comparison ---")
     out.append("layout devices: %d   schematic devices: %d" % (len(ldev), len(sdev)))
     out.append("layout nets (canonicalised): %d   schematic nets: %d" % (len(lnets), len(snets)))
@@ -626,9 +750,12 @@ def main():
     out.append("POWER_Canonical_Nets_Match: %s" % power_ok)
     out.append("POWER_Bulk_Partition_Match: %s" % bulk_ok)
     out.append("MATCHED_CELL_INSTANCES: %d" % matched)
-    out.append("TOPOLOGY_EQUIVALENT: %s"
-               % (wl_matched == wl_layout_total == wl_schem_total
-                  and len(ldev) == len(sdev) and lc == sc))
+    topology_ok = (wl_matched == wl_layout_total == wl_schem_total
+                   and len(ldev) == len(sdev) > 0 and lc == sc)
+    out.append("TOPOLOGY_EQUIVALENT: %s" % topology_ok)
+    all_checks_ok = (topology_ok and unmatched_nets == 0 and unmatched_devices == 0
+                     and unmatched_subckts == 0 and power_ok and bulk_ok)
+    out.append("LVS_VERDICT: %s" % ('PASS' if all_checks_ok else 'FAIL'))
 
     text = '\n'.join(out) + '\n'
     if OUTFILE:

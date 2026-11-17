@@ -1,0 +1,429 @@
+﻿MILESTONE 1G - GIT STATE AND EXACT DIFF
+WORKTREE_HEAD=d585055392a8006dc3199202a64702c60ded338c
+--- worktree status --porcelain=v1 ---
+ M regression/checks/lvs_compare.py
+ M regression/stages/03_eqy_prep.py
+ M regression/stages/03_lec_mapped.ps1
+?? tests/test_lvs_compare.py
+--- worktree staged diff (must be empty) ---
+REPO_HEAD=41728cd8343b726b0c717df104f3ce26ade18249
+REPO_DIRTY_PATH_COUNT=34
+--- exact diff: regression/checks/lvs_compare.py ---
+diff --git a/regression/checks/lvs_compare.py b/regression/checks/lvs_compare.py
+index 055aad1..0f32e14 100644
+--- a/regression/checks/lvs_compare.py
++++ b/regression/checks/lvs_compare.py
+@@ -29,15 +29,12 @@ Machine-readable keys (consumed by checks/acceptance.py):
+     UNMATCHED_SUBCIRCUITS: <n>
+     POWER: <state>
+ """
++import json
++import os
+ import re
+ import sys
+ from collections import defaultdict, Counter
+ 
+-EXTRACTED = sys.argv[1]
+-SCHEM = sys.argv[2]
+-OUTFILE = sys.argv[3] if len(sys.argv) > 3 else None
+-TOP = 'TEST_COUNTER'
+-
+ POWER_MAP = {
+     'VGND': 'GLOBAL_GND', 'VNB': 'GLOBAL_GND', 'VSS': 'GLOBAL_GND', 'GND': 'GLOBAL_GND',
+     'VPWR': 'GLOBAL_PWR', 'VDD': 'GLOBAL_PWR', 'PWR': 'GLOBAL_PWR',
+@@ -392,7 +389,115 @@ def fanout(circ):
+     return d
+ 
+ 
+-def main():
++# ---------------------------------------------------------------------------
++# Design-independent top-cell resolution.
++#
++# The historical comparator used a hard-coded top-cell name.  That
++# made every other design emit ``TOP CIRCUIT MISSING`` and cascade into false
++# FAILs even when the official KLayout deck reported a genuine match.  The top
++# cell is now derived ONLY from authoritative information available at
++# verification time:
++#   1. env REG_DESIGN (set by the regression controller),
++#   2. the run-dir manifest (<design>_design.cdl, acceptance.json / report.json
++#      "design"),
++#   3. a unique common root-cell detected in BOTH netlists.
++# No design name is hard-coded.  If there is no authoritative hint and
++# detection is ambiguous or yields no common root, the comparison is reported
++# as FAIL / INCONCLUSIVE with rc=1 - never as a PASS.
++# ---------------------------------------------------------------------------
++
++def _clean_name(value):
++    """Normalise a design / top name coming from env, JSON or a file name."""
++    if value is None:
++        return None
++    s = str(value).strip()
++    while len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
++        s = s[1:-1].strip()
++    if not s:
++        return None
++    return s.upper()
++
++
++def _root_cells(subckts):
++    """Subcircuits that are not instantiated by any other subcircuit.
++
++    In an extracted layout netlist this is the design top.  In a concatenated
++    reference CDL the design top is one of several roots because unused library
++    masters are appended as definitions.  The intersection of the two root sets
++    therefore identifies the design top without assuming any design name.
++    """
++    instantiated = set()
++    for c in subckts.values():
++        for (_inst, cell, _nets) in c['xs']:
++            instantiated.add(str(cell).upper())
++    return {name for name in subckts if str(name).upper() not in instantiated}
++
++
++def _hint_from_run_dir(extracted):
++    """Read the manifest-authored design name for the run being verified.
++
++    The run directory is derived from the extracted netlist path
++    (<run>/15_lvs/15_lvs_extracted.cir).  Returns (name, source) or
++    (None, None).
++    """
++    run = os.path.dirname(os.path.dirname(os.path.abspath(extracted)))
++    ref_names = set()
++    try:
++        for fn in os.listdir(run):
++            if fn.endswith('_design.cdl'):
++                n = _clean_name(fn[:-len('_design.cdl')])
++                if n:
++                    ref_names.add(n)
++    except OSError:
++        pass
++    if len(ref_names) == 1:
++        return ref_names.pop(), 'run-dir:<design>_design.cdl'
++
++    for fname in ('acceptance.json', 'report.json'):
++        try:
++            with open(os.path.join(run, fname), 'r', encoding='utf-8-sig') as f:
++                data = json.load(f)
++            n = _clean_name(data.get('design')) if isinstance(data, dict) else None
++            if n:
++                return n, 'run-dir:%s:design' % fname
++        except (OSError, ValueError, AttributeError):
++            continue
++    return None, None
++
++
++def resolve_top(lay, sch, extracted):
++    """Return (top, source, ambiguous).
++
++    ``top`` is the upper-case subcircuit name to compare, ``source`` records how
++    it was chosen, and ``ambiguous`` is True only when no authoritative hint
++    existed and auto-detection was ambiguous.  No fall-back design name: an
++    unresolved top must lead to an explicit failure, never a silent PASS.
++    """
++    env_name = _clean_name(os.environ.get('REG_DESIGN'))
++    if env_name:
++        return env_name, 'env:REG_DESIGN', False
++
++    hint, source = _hint_from_run_dir(extracted)
++    if hint:
++        return hint, source, False
++
++    common = _root_cells(lay) & _root_cells(sch)
++    if len(common) == 1:
++        return common.pop(), 'netlist-top-cell-detection', False
++    if len(common) > 1:
++        return None, 'netlist-top-cell-detection(ambiguous)', True
++    return None, 'unresolved(no-authoritative-hint-and-no-common-root)', True
++
++
++def main(argv=None):
++    args = list(sys.argv[1:] if argv is None else argv)
++    if len(args) < 2:
++        print("usage: lvs_compare.py <extracted.cir> <reference.cdl> [output.txt]")
++        return 2
++    EXTRACTED = args[0]
++    SCHEM = args[1]
++    OUTFILE = args[2] if len(args) > 2 else None
++
+     lay = parse_spice(EXTRACTED)
+     sch = parse_spice(SCHEM)
+ 
+@@ -404,13 +509,32 @@ def main():
+     out.append("   subcircuits: %d" % len(sch))
+     out.append("")
+ 
+-    lt = lay.get(TOP)
+-    st = sch.get(TOP)
++    top, top_source, ambiguous = resolve_top(lay, sch, EXTRACTED)
++    out.append("LVS_TOP: %s" % (top if top else 'UNRESOLVED'))
++    out.append("LVS_TOP_SOURCE: %s" % top_source)
++
++    if ambiguous:
++        roots = sorted(_root_cells(lay) & _root_cells(sch))
++        out.append("TOP CIRCUIT MISSING (ambiguous-or-unresolved top-cell candidates=%s; source=%s)"
++                   % (roots, top_source))
++        out.append("LVS_VERDICT: INCONCLUSIVE")
++        text = '\n'.join(out) + '\n'
++        if OUTFILE:
++            with open(OUTFILE, 'w', encoding='utf-8') as f:
++                f.write(text)
++        print(text)
++        return 1
++
++    lt = lay.get(top)
++    st = sch.get(top)
+     if lt is None or st is None:
+-        out.append("TOP CIRCUIT MISSING (layout=%s schematic=%s)" % (lt is not None, st is not None))
++        out.append("TOP CIRCUIT MISSING (layout=%s schematic=%s requested=%s source=%s)"
++                   % (lt is not None, st is not None, top, top_source))
++        out.append("LVS_VERDICT: FAIL")
+         text = '\n'.join(out) + '\n'
+         if OUTFILE:
+-            open(OUTFILE, 'w').write(text)
++            with open(OUTFILE, 'w', encoding='utf-8') as f:
++                f.write(text)
+         print(text)
+         return 1
+ 
+@@ -435,8 +559,8 @@ def main():
+     out.append("")
+ 
+     # --- transistor-level comparison ----------------------------------------
+-    ldev, lnets = flatten(lay, TOP)
+-    sdev, snets = flatten(sch, TOP)
++    ldev, lnets = flatten(lay, top)
++    sdev, snets = flatten(sch, top)
+     out.append("--- transistor-level comparison ---")
+     out.append("layout devices: %d   schematic devices: %d" % (len(ldev), len(sdev)))
+     out.append("layout nets (canonicalised): %d   schematic nets: %d" % (len(lnets), len(snets)))
+@@ -626,9 +750,12 @@ def main():
+     out.append("POWER_Canonical_Nets_Match: %s" % power_ok)
+     out.append("POWER_Bulk_Partition_Match: %s" % bulk_ok)
+     out.append("MATCHED_CELL_INSTANCES: %d" % matched)
+-    out.append("TOPOLOGY_EQUIVALENT: %s"
+-               % (wl_matched == wl_layout_total == wl_schem_total
+-                  and len(ldev) == len(sdev) and lc == sc))
++    topology_ok = (wl_matched == wl_layout_total == wl_schem_total
++                   and len(ldev) == len(sdev) > 0 and lc == sc)
++    out.append("TOPOLOGY_EQUIVALENT: %s" % topology_ok)
++    all_checks_ok = (topology_ok and unmatched_nets == 0 and unmatched_devices == 0
++                     and unmatched_subckts == 0 and power_ok and bulk_ok)
++    out.append("LVS_VERDICT: %s" % ('PASS' if all_checks_ok else 'FAIL'))
+ 
+     text = '\n'.join(out) + '\n'
+     if OUTFILE:
+--- exact diff: tests/test_lvs_compare.py (new file) ---
+diff --git a/tests/test_lvs_compare.py b/tests/test_lvs_compare.py
+new file mode 100644
+index 0000000..acc21b9
+--- /dev/null
++++ b/tests/test_lvs_compare.py
+@@ -0,0 +1,208 @@
++"""Targeted regression tests for design-driven top-cell selection in lvs_compare.py.
++
++Covers Milestone 1G: the comparator must resolve the top cell from
++authoritative verification-time information (env REG_DESIGN, the run-dir
++manifest, or a unique common root-cell detected in both netlists).  No design
++name may be hard-coded; an unknown / ambiguous / one-sided top must return an
++explicit FAIL / INCONCLUSIVE and never a PASS.
++
++These tests exercise the real comparator as a subprocess (env handling, return
++code and written report included) and never run any part of the 15-stage flow.
++"""
++import json
++import os
++import shutil
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++ROOT = Path(__file__).resolve().parents[1]
++COMPARATOR = ROOT / "regression" / "checks" / "lvs_compare.py"
++SYNTHETIC = ROOT / "regression" / "tests" / "lvs_synthetic"
++
++
++def _netlist(top):
++    """Minimal two-netlist-equivalent SPICE with an unambiguous top cell."""
++    return (
++        "* regression fixture\n"
++        ".subckt INVX1 A Y VGND VNB VPB VPWR\n"
++        "M0 Y A VGND VNB nshort w=0.42u l=0.15u\n"
++        "M1 Y A VPWR VPB pshort w=0.84u l=0.15u\n"
++        ".ends\n"
++        ".subckt %s in1 in2 out VGND VPWR\n" % top
++        + "X1 in1 nint VGND VGND VPWR VPWR INVX1\n"
++        "X2 in2 out  VGND VGND VPWR VPWR INVX1\n"
++        "X3 nint out VGND VGND VPWR VPWR INVX1\n"
++        ".ends\n"
++    )
++
++
++def _write_run(tmp_path, layout_text, reference_text, manifest=None, design=None):
++    """Create <run>/15_lvs/<extracted> + <run>/<reference>, run-shaped.
++
++    ``manifest`` selects which authoritative run-dir hint is written:
++    ``design_cdl``, ``acceptance_json`` or ``report_json``; ``design`` is the
++    design name that hint must carry.
++    """
++    run = tmp_path / "run"
++    lvs = run / "15_lvs"
++    lvs.mkdir(parents=True)
++    extracted = lvs / "15_lvs_extracted.cir"
++    reference = run / "6_final_concat.cdl"
++    extracted.write_text(layout_text, encoding="utf-8")
++    reference.write_text(reference_text, encoding="utf-8")
++    if manifest == "design_cdl":
++        (run / ("%s_design.cdl" % design)).write_text(reference_text, encoding="utf-8")
++    elif manifest in ("acceptance_json", "report_json"):
++        fname = "acceptance.json" if manifest == "acceptance_json" else "report.json"
++        (run / fname).write_text(
++            json.dumps({"design": design}), encoding="utf-8")
++    return extracted, reference
++
++
++def _env(env_extra=None):
++    env = os.environ.copy()
++    env.pop("REG_DESIGN", None)  # tests are explicit about the design hint
++    if env_extra:
++        env.update(env_extra)
++    return env
++
++
++def _run_comparator(extracted, reference, out_path, env_extra=None):
++    return subprocess.run(
++        [sys.executable, str(COMPARATOR), str(extracted), str(reference), str(out_path)],
++        capture_output=True, text=True, env=_env(env_extra),
++    )
++
++
++def _report(out_path, proc):
++    if out_path.exists():
++        return out_path.read_text(encoding="utf-8")
++    return proc.stdout + proc.stderr
++
++
++@pytest.mark.parametrize("source", ["env", "design_cdl", "acceptance_json", "report_json"])
++def test_soc_ctrl_top_selected_from_manifest_or_env(tmp_path, source):
++    netlist = _netlist("soc_ctrl")
++    extracted, reference = _write_run(
++        tmp_path, netlist, netlist,
++        manifest=source if source != "env" else None, design="soc_ctrl")
++    out = tmp_path / "lvs_compare.txt"
++    env_extra = {"REG_DESIGN": "soc_ctrl"} if source == "env" else None
++    proc = _run_comparator(extracted, reference, out, env_extra)
++    txt = _report(out, proc)
++
++    assert proc.returncode == 0, txt
++    assert "LVS_TOP: SOC_CTRL" in txt
++    assert "TOP CIRCUIT MISSING" not in txt
++    assert "DEVICES: layout=6 schematic=6" in txt
++    assert "TOPOLOGY_EQUIVALENT: True" in txt
++    assert "LVS_VERDICT: PASS" in txt
++    if source == "env":
++        assert "LVS_TOP_SOURCE: env:REG_DESIGN" in txt
++    else:
++        assert "LVS_TOP_SOURCE: run-dir:" in txt
++
++
++@pytest.mark.parametrize("source", ["env", "design_cdl"])
++def test_test_counter_resolved_from_env_or_manifest(tmp_path, source):
++    netlist = _netlist("test_counter")
++    extracted, reference = _write_run(
++        tmp_path, netlist, netlist,
++        manifest=source if source != "env" else None, design="test_counter")
++    out = tmp_path / "lvs_compare.txt"
++    env_extra = {"REG_DESIGN": "test_counter"} if source == "env" else None
++    proc = _run_comparator(extracted, reference, out, env_extra)
++    txt = _report(out, proc)
++
++    assert proc.returncode == 0, txt
++    assert "LVS_TOP: TEST_COUNTER" in txt
++    assert "LVS_TOP_SOURCE: %s" % (
++        "env:REG_DESIGN" if source == "env" else "run-dir:<design>_design.cdl") in txt
++    assert "TOP CIRCUIT MISSING" not in txt
++    assert "DEVICES: layout=6 schematic=6" in txt
++    assert "TOPOLOGY_EQUIVALENT: True" in txt
++    assert "LVS_VERDICT: PASS" in txt
++
++
++def test_no_hard_coded_fallback_in_comparator_source():
++    src = COMPARATOR.read_text(encoding="utf-8")
++    assert "TEST_COUNTER" not in src
++    assert "DEFAULT_TOP" not in src
++    assert "netlist-top-cell-detection" in src
++
++
++def test_unique_common_root_detected_without_hint(tmp_path):
++    """No env and no manifest: a unique common root is authoritative itself."""
++    netlist = _netlist("NO_HINT_ROOT")
++    extracted, reference = _write_run(tmp_path, netlist, netlist)
++    out = tmp_path / "lvs_compare.txt"
++    proc = _run_comparator(extracted, reference, out)
++    txt = _report(out, proc)
++
++    assert proc.returncode == 0, txt
++    assert "LVS_TOP: NO_HINT_ROOT" in txt
++    assert "LVS_TOP_SOURCE: netlist-top-cell-detection" in txt
++    assert "TOPOLOGY_EQUIVALENT: True" in txt
++    assert "LVS_VERDICT: PASS" in txt
++
++
++def test_unknown_top_from_env_fails_explicitly(tmp_path):
++    netlist = _netlist("soc_ctrl")
++    extracted, reference = _write_run(tmp_path, netlist, netlist)
++    out = tmp_path / "lvs_compare.txt"
++    proc = _run_comparator(extracted, reference, out, {"REG_DESIGN": "NO_SUCH_TOP"})
++    txt = _report(out, proc)
++
++    assert proc.returncode == 1
++    assert "LVS_TOP: NO_SUCH_TOP" in txt
++    assert "TOP CIRCUIT MISSING" in txt
++    assert "requested=NO_SUCH_TOP" in txt
++    assert "LVS_VERDICT: FAIL" in txt
++    assert "DEVICES:" not in txt  # no PASS-style summary is emitted
++
++
++def test_top_missing_on_one_side_fails_explicitly(tmp_path):
++    extracted, reference = _write_run(
++        tmp_path, _netlist("soc_ctrl"), _netlist("SOME_OTHER_TOP"))
++    out = tmp_path / "lvs_compare.txt"
++    proc = _run_comparator(extracted, reference, out, {"REG_DESIGN": "soc_ctrl"})
++    txt = _report(out, proc)
++
++    assert proc.returncode == 1
++    assert "TOP CIRCUIT MISSING" in txt
++    assert "layout=True schematic=False" in txt
++    assert "LVS_VERDICT: FAIL" in txt
++    assert "DEVICES:" not in txt
++
++
++def test_ambiguous_auto_detection_is_inconclusive_not_pass(tmp_path):
++    # Two independent roots in both netlists, no env hint and no manifest:
++    # auto-detection must refuse to guess rather than report a false PASS.
++    netlist = _netlist("TOP_A") + _netlist("TOP_B")
++    extracted, reference = _write_run(tmp_path, netlist, netlist)
++    out = tmp_path / "lvs_compare.txt"
++    proc = _run_comparator(extracted, reference, out)
++    txt = _report(out, proc)
++
++    assert proc.returncode == 1
++    assert "LVS_TOP: UNRESOLVED" in txt
++    assert "TOP CIRCUIT MISSING" in txt
++    assert "LVS_VERDICT: INCONCLUSIVE" in txt
++    assert "DEVICES:" not in txt
++
++
++def test_synthetic_negative_controls_preserved(tmp_path):
++    """The existing lvs_synthetic negative-control suite stays intact."""
++    work = tmp_path / "regression"
++    shutil.copytree(SYNTHETIC, work / "tests" / "lvs_synthetic")
++    (work / "checks").mkdir(parents=True)
++    shutil.copy2(COMPARATOR, work / "checks" / "lvs_compare.py")
++    proc = subprocess.run(
++        [sys.executable, str(work / "tests" / "lvs_synthetic" / "run.py")],
++        capture_output=True, text=True, env=_env(),
++    )
++    assert proc.returncode == 0, proc.stdout + proc.stderr
++    assert '"fail": 0' in proc.stdout

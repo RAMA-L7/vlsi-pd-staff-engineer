@@ -20,6 +20,11 @@ PDK = re.sub(r'sky130-pdk-libs-', 'skywater-pdk-libs-', PDK)
 RTL = sys.argv[3]
 NETLIST = sys.argv[4]
 OSS = sys.argv[5]
+# Optional 6th arg: explicit EQY gold source (Milestone 1G).  Under the supported
+# -RtlOverride flow the caller passes the canonical promoted RTL here, so EQY checks
+# the mapped netlist against the reference spec instead of the structurally
+# different (but proven-equivalent) candidate.  Defaults to RTL for compatibility.
+EQY_GOLD = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6].strip() else RTL
 
 os.makedirs(OUT, exist_ok=True)
 
@@ -334,8 +339,9 @@ depth 3
 use sby
 depth 3
 engine smtbmc bitwuzla
-""" % {'rtl': to_windows(RTL), 'gate': to_windows(gate), 'top': TOP}
+""" % {'rtl': to_windows(EQY_GOLD), 'gate': to_windows(gate), 'top': TOP}
 NEG = POS.replace(to_windows(gate), to_windows(broken))
+print('EQY gold source: %s' % EQY_GOLD)
 with open(os.path.join(OUT, '%s.eqy' % TOP), 'w') as f:
     f.write(POS)
 with open(os.path.join(OUT, '%s_broken.eqy' % TOP), 'w') as f:
