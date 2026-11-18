@@ -1,0 +1,12 @@
+{
+  "run_id": "pilot_t1_longcat_free_r1",
+  "model": "opencode/longcat-2.5-free",
+  "task": "T1",
+  "status": "BLOCKED",
+  "reason": "model access unavailable before task execution",
+  "error": "Free usage limit reached. Free models work in OpenCode; subscribe to OpenCode Go to keep going.",
+  "timestamp_utc": "2026-11-18T16:39:02Z",
+  "timestamp_ist": "2026-11-18T22:09:02+05:30",
+  "artifacts_produced": [],
+  "note": "No model result; no score; no conversion to PASS."
+}

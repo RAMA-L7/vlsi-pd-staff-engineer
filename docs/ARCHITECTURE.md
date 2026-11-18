@@ -1,6 +1,6 @@
 # VLSI Physical Design Framework — Architecture Documentation
 
-## feature/F-01-claude-agent-discovery — Multi-Design v2.0
+## main — Multi-Design v2.0
 
 ### Overview
 
@@ -322,7 +322,7 @@ Framework supports two independently configured designs:
 | Design | RTL Source | SDC | Top Module | Artifact Prefix | Status |
 |---|---|---|---|---|---|
 | **test_counter** | `examples/test-counter/rtl/test_counter.v` | `examples/test-counter/rtl/test_counter.sdc` | counter | `test_counter` | ✅ Validated (Phase 14: REPRODUCIBLE) |
-| **soc_ctrl** | (canonical RTL/SDC ABSENT from 27b5d1c) | (ABSENT) | soc_ctrl | soc_ctrl | ⛔ BLOCKED — inputs not in published tree; only isolated candidates present |
+| **soc_ctrl** | `examples/soc_ctrl/rtl/soc_ctrl.v` | `examples/soc_ctrl/rtl/soc_ctrl.sdc` | soc_ctrl | soc_ctrl | ⛔ FAILED QUALIFICATION — full run executed, FAILED QUALIFICATION (14/16; SS timing + LVS-gate FAIL retained); canonical inputs tracked at 0a9eb57 |
 
 **Design Config** (`$DesignConfig` hashtable in `run_regression.ps1`) maps each design name to:
 
@@ -636,7 +636,7 @@ Regression Continuation (if all stages pass) or Escalation
 | **14** | Initial 15-stage flow; `run_regression.ps1`; acceptance checks (88/88 Phase 14 historical; current 95/95); negative tests N1–N7; REPRODUCIBLE classification | ✅ Complete |
 | **15** | `-Design` parameter added to `run_regression.ps1`; `$DesignConfig` hashtable; `01_synthesis.ps1` design-aware via `$Top`; soc_ctrl RTL + SDC created; N7 injection fix (target `15a_lvs_refcdl.tcl`) | ✅ Complete |
 | **16** | Shell failure fully diagnosed; all framework modifications documented; GitHub publication procedures prepared; 7 reports created | ✅ Complete |
-| **17B** | Professional README rewritten; ARCHITECTURE.md created; all 9 agents documented with full responsibilities; all 10 skills documented with execution procedures; REGRESSION.md created; VALIDATION.md created with Phase 1–17 milestones; DESIGN.md created with test_counter + soc_ctrl; .gitige review; GitHub publication preparation | ✅ In Progress |
+| **17B** | Professional README rewritten; ARCHITECTURE.md created; all 9 agents documented with full responsibilities; all 10 skills documented with execution procedures; REGRESSION.md created; VALIDATION.md created with Phase 1–17 milestones; DESIGN.md created with test_counter + soc_ctrl; .gitige review; GitHub publication preparation | ✅ COMPLETE (2026-11-18 final reconciliation) |
 
 ### Architecture Diagram — Key Relationships
 
@@ -681,7 +681,7 @@ JSON Report (schema_version, stage status, per-check results, artifact paths, ha
     ├──────────────────────────────────────────────────────┐
     ↓                                                   ↓
 Cross-Run Comparison (Run A vs Run B)                   GitHub Publication
-(20/20 artefacts identical, GDSII timestamps stripped)   (implementation published at 6c4a264 on origin/main)
+(20/20 artefacts identical, GDSII timestamps stripped)   (implementation historical published ancestor 6c4a264; current origin/main is 0a9eb57)
 ```
 
 ### Architecture Principles
@@ -751,11 +751,11 @@ Cross-Run Comparison (Run A vs Run B)                   GitHub Publication
 2. **Run soc_ctrl regression**: `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl`
 3. **Verify all 15 stages pass** for both designs
 4. **Run DRC, LVS, multi-corner STA** on both designs
-5. **Git commit and push** to remote: `git push origin feature/F-01-claude-agent-discovery`
-6. **Verify remote publication** on `RAMA-L7/vlsi-pd-staff-engineer`
+5. **Git commit and push** to remote: `# Publication is recorded in the external PUBLICATION_REPORT.md; verify origin/main after authorized push`
+6. **Verify `origin/main` after authorized publication (see PUBLICATION_REPORT.md)
 7. **Update central project status** with all phases (1–17)
 
 ---
 
-*Architecture Documentation — feature/F-01-claude-agent-discovery — Multi-Design Framework v2.0*
+*Architecture Documentation — main — Multi-Design Framework v2.0*
 *Generated: 2026-11-14 — All agent and skill definitions verified via read-only file inspection*

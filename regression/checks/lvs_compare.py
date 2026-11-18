@@ -762,7 +762,11 @@ def main(argv=None):
         with open(OUTFILE, 'w', encoding='utf-8') as f:
             f.write(text)
     print(text)
-    return 0
+    # The exit code must agree with the machine-readable verdict.  Previously
+    # this returned 0 unconditionally, so a FAIL/INCONCLUSIVE comparison still
+    # produced a zero exit status and 15_lvs.sh's `rc=$?` gate could not detect
+    # it (SR-07 U2).  Early exits above already return 1 for unresolved tops.
+    return 0 if all_checks_ok else 1
 
 
 if __name__ == '__main__':

@@ -1,6 +1,16 @@
 # Validation Documentation — Engineering Milestones Phases 1–17
 
-## feature/F-01-claude-agent-discovery — Multi-Design v2.0
+## main — Multi-Design v2.0
+
+## Authoritative qualification matrix — this checkout (SR-10 / SR-08)
+
+The authoritative status for this checkout is the qualification matrix in `README.md`, tied to repository commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b` / tree `ab0bcf96d00e99a1b1a6cd46f41fde159661791b`, with recorded run IDs `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (test_counter: 16/16 stages PASS, 95/95 checks each) and `run_pub_m1d_soc_ctrl_full` (soc_ctrl full physical run: 14/16 stages, retained STA + LVS-gate failures). All phase milestones below are historical context; where they disagree with that matrix, the matrix governs. No fresh 15-stage EDA run was performed against `0a9eb57` in this documentation pass.
+
+**Current baseline setup WNS (SR-10; `baseline_20261116` / `_r2`):** FF `+5.7003` ns, SS `+2.6745` ns, TT `+5.4550` ns, all with 0 violators. The value `−0.6159` is **not** a setup WNS: it was a transcription error in an older `DESIGN.md` draft (it is the TT **hold** slack from `reproducibility_r1_vs_r2.json`). A negative setup WNS alongside "PASS / 0 violators" is not a valid claim. No soc_ctrl setup signoff is claimed — its full run retained an SS setup failure (WNS −2.3378 ns, 3 violated paths).
+
+**Unsupported capabilities (do not claim):** IR drop, EM, antenna checking, UPF / low-power intent closure, post-fill extraction / timing closure, and signoff / tapeout readiness. See `README.md` ("NOT implemented in this repository") and `assistant/baseline.py::UNSUPPORTED_CAPABILITIES`.
+
+---
 
 ### Overview
 
@@ -87,13 +97,13 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
   - `-Design` parameter on `run_regression.ps1` (test_counter, soc_ctrl)
   - `$DesignConfig` hashtable mapping design names to RTL/SDC paths and artifact prefixes
   - `01_synthesis.ps1` design-aware via `$Top = $env:REG_DESIGN`
-- soc_ctrl RTL: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` ABSENT from published tree (untracked in preserved tree only)
-- soc_ctrl SDC: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` ABSENT from published tree (untracked in preserved tree only)
+- soc_ctrl RTL: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` tracked at reviewed commit `0a9eb57` and in the current worktree (absent only from the earlier `27b5d1c` snapshot)
+- soc_ctrl SDC: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` tracked at reviewed commit `0a9eb57` and in the current worktree (absent only from the earlier `27b5d1c` snapshot)
   - All 9 agents integrated with design-aware paths
   - All 10 skills configured for both designs
   - REPRODUCIBLE classification maintained for test_counter
   - N7 fix verified: net swap injected into `15a_lvs_refcdl.tcl`; LVS mismatch DETECTED
-  - Evidence: `D:\\audit\\phase15_multidesign_validation_20261114\\`
+  - Evidence: `the in-repo milestone reports `docs/reviews/MILESTONE_1D_REPORT.md` and `docs/reviews/MILESTONE_1G_REPORT.md``
 
 #### Phase 16: Shell Failure Diagnosis and Documentation; Framework Modifications Documented; GitHub Publication Procedures Prepared
 - **Achievement**: Shell failure fully diagnosed (historical Code Mode runtime shell integration issue, Phase 14–17A; no longer applies to the documented baseline command path); all framework modifications documented; GitHub publication procedures prepared; 7 reports created
@@ -128,13 +138,13 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 
 #### Phase 17B: Professional Repository Documentation and GitHub Release Preparation
 - **Achievement**: Professional README rewritten; ARCHITECTURE.md created; all 9 agents documented; all 10 skills documented; REGRESSION.md created; VALIDATION.md created; DESIGN.md created; .gitignore review; GitHub publication preparation
-- **Status**: ✅ In Progress
+- **Status**: ✅ COMPLETE (2026-11-18 final reconciliation)
 - **Details** (this phase):
   - README.md: Professional rewrite with project introduction, engineering objectives, key capabilities, architecture overview, 9 agents, 10 skills, supported EDA tools, Sky130 HD technology integration, regression architecture, supported designs, quick-start instructions, configuration instructions, validation status, known limitations, roadmap
   - ARCHITECTURE.md: Full architecture documentation with Mermaid diagrams; 9 agents with responsibilities; 10 skills with execution procedures; EDA tool integration; design configuration; regression execution; acceptance engine; machine-readable reporting; evidence generation; error handling
   - REGRESSION.md: run_regression.ps1 documentation; -Design parameter; test_counter and soc_ctrl configuration; 15 stages with acceptance checks; JSON reporting; artifact organization; negative tests; failure classification; reproducibility; clear distinction between configured capabilities and executed validation
   - VALIDATION.md: Engineering milestones Phases 1–17; evidence-based status labels; historical shell limitation disclosed (resolved for baseline path); Do NOT claim soc_ctrl full-flow validation
-  - DESIGN.md: test_counter (validated baseline) and soc_ctrl (integrated, pending execution) documented separately; RTL provenance; SDC; regression integration; outstanding validation; distinguish locally created RTL and SDC from upstream source material
+  - DESIGN.md: test_counter (validated baseline) and soc_ctrl (full run executed, failed qualification) documented separately; RTL provenance; SDC; regression integration; stage results; distinguish locally created RTL and SDC from upstream source material
 
 ### 📋 Validation Status Summary
 
@@ -149,27 +159,27 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 | **EDA Tool Paths** | ✅ Documented (EDA_TOOL_REGISTRY.md) | Most tools under `D:\\tools\\`; WSL-dependent noted |
 | **Reproducible Baseline** | ✅ REPRODUCIBLE (Phase 14) | Two runs A&B; 88/88 checks (Phase 14 historical; current baseline 95/95); 20/20 artefacts identical |
 | **Negative Test Suite** | ✅ Configured and verified | N1–N7 all DETECTED; N7 fix in `15a_lvs_refcdl.tcl` |
-| **soc_ctrl Integration** | ✅ Framework configured | RTL + SDC created; full regression pending execution |
+| **soc_ctrl Integration** | ✅ Framework configured; full run executed, failed qualification | RTL + SDC tracked at `0a9eb57`; Milestone 1D full run `run_pub_m1d_soc_ctrl_full` (14/16 stages, retained STA + LVS-gate FAIL) |
 | **Shell Execution Blocker (historical)** | ⚠️ Resolved for baseline | Historically reported Code Mode runtime issue (Phase 14–17A); documented baseline command now executes 16/16 stages PASS |
 
 #### Execution Status
 | Design | Regression Status | Evidence |
 |---|---|---|
-| **test_counter** | REPRODUCIABLE baseline (Phase 14 + 2026-11-16) | Two runs A&B OVERALL PASS; 88/88 checks (Phase 14 historical); 20/20 artefacts identical; 2026-11-16 baseline command 16/16 stages PASS, 92 stage + 3 manifest = 95 checks |
-| **soc_ctrl** | Configured; full regression not executed in this pass | Framework integration verified; RTL + SDC created; stage scripts design-aware |
+| **test_counter** | REPRODUCIBLE baseline (Phase 14 + 2026-11-16) | Two runs A&B OVERALL PASS; 88/88 checks (Phase 14 historical); 20/20 artefacts identical; 2026-11-16 baseline command 16/16 stages PASS, 92 stage + 3 manifest = 95 checks |
+| **soc_ctrl** | Full run executed (Milestone 1D, `run_pub_m1d_soc_ctrl_full`); failed qualification | 14/16 stages; mapped LEC 8/8, DRC 0 violations; STA FAIL (SS WNS −2.3378 ns, 3 paths) and LVS-gate FAIL retained; no signoff |
 
 #### Current Execution Status
 - **Shell tool**: functional for the documented baseline command path (the reported Code Mode issue is a historical Phase 14–17A record)
-- **Live regression execution**: test_counter baseline executed — 16/16 stages PASS, 92 checks, reproduced twice; soc_ctrl not executed in this pass
-- **Git operations**: available (local validation edits uncommitted; implementation published at 6c4a264 on origin/main)
+- **Live regression execution**: test_counter baseline executed (`baseline_20261116` / `_r2`) — 16/16 stages PASS, 95 checks (92 stage + 3 manifest), reproduced twice; soc_ctrl full physical run executed in Milestone 1D (`run_pub_m1d_soc_ctrl_full`; 14/16 stages, STA/LVS FAIL retained), no fresh run against `0a9eb57`
+- **Git operations**: available (local validation edits uncommitted; implementation historical published ancestor 6c4a264; current origin/main is 0a9eb57)
 - **DRC/LVS/STA verification**: executed for test_counter as baseline stages (results in `docs/reviews/post-publication-validation.md`)
 - **GDSII generation**: executed for test_counter as a baseline stage
 - **Negative test suite**: framework script passes 47/0/0; unit and failure-injection suites pass
-- **Remote GitHub publication**: implementation published at 6c4a264; no new publication in this validation pass
+- **Remote GitHub publication**: historical published ancestor 6c4a264; current origin/main 0a9eb57; no new publication in this validation pass
 
 ### 🔍 Shell Execution Blocker — Historical Disclosure (Phases 14–17A)
 
-> **Status (2026-11-16):** the blocker below is a historical record. It no longer applies to the documented baseline command path, which executes the full test_counter regression (16/16 stages PASS, 92 checks). See `docs/reviews/post-publication-validation.md`.
+> **Status (2026-11-16):** the blocker below is a historical record. It no longer applies to the documented baseline command path, which executes the full test_counter regression (16/16 stages PASS, 95 checks = 92 stage + 3 manifest). See `docs/reviews/post-publication-validation.md`.
 
 **Issue (historical, Phase 14–17A)**: Code Mode runtime shell integration issue — reported from Phase 14 onward; resolved for the documented baseline command path
 
@@ -184,19 +194,19 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 
 **Impact (historical, at the time):**
 - Live regression execution was reported blocked on both designs
-- DRC, LVS, multi-corner STA were not live-executed in Phase 17B
+- DRC, LVS, multi-corner STA were not live-executed in Phase 17B (true for that dated phase only; later baseline runs executed them for test_counter, and the Milestone 1D soc_ctrl run executed STA/DRC/LVS with retained failures — see authoritative matrix above)
 - GDSII generation and verification were reported blocked
 - Git operations were reported blocked
 - Negative test suite execution was reported blocked
 - Remote GitHub publication was reported blocked
 
-**Current (2026-11-16 validation):** the documented baseline command executes the full test_counter regression (16/16 stages PASS, 92 checks, byte-identical netlists) and live LEC/STA gates pass; the historical blocker no longer applies. soc_ctrl was simply not executed in this pass.
+**Current (2026-11-16 validation):** the documented baseline command executes the full test_counter regression (16/16 stages PASS, 95 checks = 92 stage + 3 manifest, byte-identical netlists) and live LEC/STA gates pass; the historical blocker no longer applies. soc_ctrl's full physical run was executed in Milestone 1D (`run_pub_m1d_soc_ctrl_full`, 2026-11-17) and failed qualification (STA/LVS failures retained); no fresh run was performed against `0a9eb57` in this documentation pass.
 
 **Recovery actions (historical plan; baseline recovery achieved):**
 1. `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter` → verify REPRODUCIBLE baseline
 2. `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl` → verify all 15 stages
-3. Git commit and push to remote: `git push origin feature/F-01-claude-agent-discovery`
-4. Verify remote publication on `RAMA-L7/vlsi-pd-staff-engineer`
+3. Git commit and push to remote: `# Publication is recorded in the external PUBLICATION_REPORT.md; verify origin/main after authorized push`
+4. Verify `origin/main` after authorized publication (see PUBLICATION_REPORT.md)
 5. Update central project status with all phases (1–17)
 
 ### 📄 License
@@ -209,4 +219,4 @@ This framework is maintained as part of the VLSI Physical Design Staff Engineer 
 
 **Historical shell blocker note**: a Code Mode runtime issue was reported in Phases 14–17A; it no longer affects the documented baseline command path, which executes 16/16 stages PASS on test_counter.
 
----\n*Validation Documentation — feature/F-01-claude-agent-discovery — Multi-Design v2.0*\n*Generated: 2026-11-14 — All milestones evidence-based; verified via read-only file inspection across Phases 1–17A*]
+---\n*Validation Documentation — main — Multi-Design v2.0*\n*Generated: 2026-11-14 — All milestones evidence-based; verified via read-only file inspection across Phases 1–17A*]

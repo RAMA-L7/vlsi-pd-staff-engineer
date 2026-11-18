@@ -11,6 +11,7 @@ code and written report included) and never run any part of the 15-stage flow.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -192,6 +193,30 @@ def test_ambiguous_auto_detection_is_inconclusive_not_pass(tmp_path):
     assert "TOP CIRCUIT MISSING" in txt
     assert "LVS_VERDICT: INCONCLUSIVE" in txt
     assert "DEVICES:" not in txt
+
+
+def test_fail_verdict_returns_nonzero_exit_code(tmp_path):
+    """SR-07 U2: an LVS_VERDICT: FAIL must produce a non-zero exit status.
+
+    The comparator used to print FAIL yet return 0, so 15_lvs.sh's `rc=$?`
+    gate could not detect a failed independent comparison.  A genuine match
+    must still exit 0 (covered by the PASS tests above).
+    """
+    good = _netlist("soc_ctrl")
+    # Structurally mismatched reference: one device geometry differs, so the
+    # device multiset (and WL connectivity) cannot match.
+    bad = good.replace("w=0.42u", "w=0.50u", 1)
+    assert bad != good
+    extracted, reference = _write_run(tmp_path, good, bad)
+    out = tmp_path / "lvs_compare.txt"
+    proc = _run_comparator(extracted, reference, out, {"REG_DESIGN": "soc_ctrl"})
+    txt = _report(out, proc)
+
+    assert proc.returncode == 1, txt
+    assert "LVS_VERDICT: FAIL" in txt
+    m = re.search(r"UNMATCHED_DEVICES: (\d+)", txt)
+    assert m and int(m.group(1)) > 0
+    assert "LVS_VERDICT: PASS" not in txt
 
 
 def test_synthetic_negative_controls_preserved(tmp_path):

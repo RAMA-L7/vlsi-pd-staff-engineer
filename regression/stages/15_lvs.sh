@@ -11,6 +11,9 @@
 #          ${REG_DESIGN}_design.cdl, 6_final_concat.cdl, lvs_compare.txt
 # ============================================================================
 set -u
+# pipefail is required so that `rc=$?` after a piped comparator call observes
+# the comparator's status, not sed's (SR-07 U2).
+set -o pipefail
 : "${REG_RUN:?}"; : "${REG_KLAYOUT:?}"; : "${REG_OPENROAD:?}"
 : "${REG_PLATFORM:?}"; : "${REG_CDL:?}"; : "${REG_LVS_DECK:?}"
 

@@ -49,6 +49,33 @@ GOLD_MARKER = "# --- EQY gold-source selection (Milestone 1G) ---"
 GOLD_PRINT = 'Write-Host "  EQY gold source: $EqyGold"'
 
 
+def _win_path(p: Path) -> str:
+    """Return a Windows-resolvable path string for a Path on either host.
+
+    The tests run under Windows PowerShell even when pytest itself is launched
+    from WSL, so every path handed to PowerShell/03_eqy_prep.py must use the
+    Windows drive-letter form (SR-07 U7).
+    """
+    s = str(p).replace("\\", "/")
+    if os.name == "nt":
+        return s.replace("/", "\\")
+    m = re.match(r"^/mnt/([A-Za-z])/(.*)$", s)
+    if m:
+        return m.group(1).upper() + ":/" + m.group(2)
+    return s  # caller passes only paths rooted on a Windows-visible drive
+
+
+def _norm_path(value: object) -> str:
+    """Normalise a path (or a line containing one) for comparison.
+
+    Converts WSL drive mounts anywhere in the text (a report may contain
+    several paths) so Windows and WSL spellings compare equal.
+    """
+    s = str(value).replace("\\", "/")
+    s = re.sub(r"/mnt/([A-Za-z])/", lambda m: m.group(1).upper() + ":/", s)
+    return s.lower()
+
+
 def _make_prep_args(tmp_path: Path, *, gold: object = ...):
     """Build a minimal PDK/OSS/netlist tree and return (outdir, argv).
 
@@ -125,18 +152,21 @@ def _ps_selection(tmp_path: Path, repo: Path, rtl: Path, design: str = "soc_ctrl
     start = src.index(GOLD_MARKER)
     end = src.index(GOLD_PRINT, start) + len(GOLD_PRINT)
     block = src[start:end]
-    script = "$Des = '%s'\n" % design + block + (
+    # Use -Command instead of -File: WSL's /tmp/... script path cannot be
+    # resolved by Windows PowerShell.  Windows PowerShell launched from WSL
+    # does not reliably inherit subprocess `env` overrides, so the two paths
+    # the selection block reads are injected as literal env assignments in the
+    # script itself.  Both are Windows-resolvable (SR-07 U7).
+    script = (
+        "$env:REG_RTL = '%s'\n$env:REG_REPO = '%s'\n$Des = '%s'\n"
+        % (_win_path(rtl), _win_path(repo), design)
+    ) + block + (
         "\nWrite-Output ('EQYGOLD=' + $EqyGold)\n"
         "Write-Output ('EQYGOLDWSL=' + $EqyGoldWsl)\n"
     )
-    path = tmp_path / "selection.ps1"
-    path.write_text(script, encoding="utf-8")
-    env = os.environ.copy()
-    env["REG_REPO"] = str(repo)
-    env["REG_RTL"] = str(rtl)
     return subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(path)],
-        env=env,
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        env=os.environ.copy(),
         capture_output=True,
         text=True,
     )
@@ -151,9 +181,10 @@ def test_prep_honours_explicit_eqy_gold(tmp_path):
     result = _run(args)
     assert result.returncode == 0, result.stdout + result.stderr
     gold_line = _section_line(out / "soc_ctrl.eqy", "gold")
-    assert str(GOLDEN_RTL).replace("\\", "/") in gold_line
+    assert _norm_path(GOLDEN_RTL) in _norm_path(gold_line)
     assert "candidate.v" not in gold_line
-    assert "EQY gold source: %s" % GOLDEN_RTL in result.stdout
+    assert "EQY gold source:" in result.stdout
+    assert _norm_path(GOLDEN_RTL) in _norm_path(result.stdout)
 
 
 def test_prep_defaults_gold_to_rtl_when_no_sixth_arg(tmp_path):
@@ -190,17 +221,23 @@ def test_stage03_switches_to_canonical_gold_on_override(tmp_path):
     result = _ps_selection(tmp_path, REPO, CANDIDATE_RTL)
     assert result.returncode == 0, result.stderr
     assert "-RtlOverride detected" in result.stdout
-    assert "EQYGOLD=%s" % GOLDEN_RTL in result.stdout
-    posix = str(GOLDEN_RTL).replace("\\", "/")
-    expected_wsl = "/mnt/" + posix[0].lower() + posix[2:]
-    assert "EQYGOLDWSL=%s" % expected_wsl in result.stdout
+    m = re.search(r"EQYGOLD=(.*)", result.stdout)
+    assert m and _norm_path(m.group(1).strip()) == _norm_path(GOLDEN_RTL)
+    # Convert-ToWslPath maps D:/... (or D:\...) -> /mnt/d/... on either host.
+    # _win_path() returns backslashes under native Windows pytest, so normalise
+    # separators before deriving the expected WSL path.
+    win = _win_path(GOLDEN_RTL).replace("\\", "/")
+    expected_wsl = "/mnt/" + win[0].lower() + win[2:]
+    mw = re.search(r"EQYGOLDWSL=(.*)", result.stdout)
+    assert mw and mw.group(1).strip().replace("\\", "/") == expected_wsl
 
 
 def test_stage03_keeps_rtl_when_no_override(tmp_path):
     result = _ps_selection(tmp_path, REPO, GOLDEN_RTL)
     assert result.returncode == 0, result.stderr
     assert "-RtlOverride detected" not in result.stdout
-    assert "EQYGOLD=%s" % GOLDEN_RTL in result.stdout
+    m = re.search(r"EQYGOLD=(.*)", result.stdout)
+    assert m and _norm_path(m.group(1).strip()) == _norm_path(GOLDEN_RTL)
 
 
 def test_stage03_equivalence_gates_are_not_weakened():

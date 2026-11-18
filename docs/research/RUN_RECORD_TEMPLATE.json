@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "schema_name": "agent_perf_study.run_record",
+  "run_id": "<APES-<PHASE>-<TASK>-<MODELKEY>-r<REP>[-retryN]>",
+  "phase": "<PILOT|FULL>",
+  "task": "<T1|T2|T3>",
+  "model": "<exact model id, e.g. opencode/gpt-6.2-sol>",
+  "model_short_key": "<gpt62sol|claude52|gemini4h|deepseek41|qwen4max>",
+  "repetition": 1,
+  "retry_of": null,
+  "prompt_template_ref": "protocol/EXPERIMENTAL_PROTOCOL.md#7",
+  "prompt_template_sha256": "<sha256 of the exact rendered prompt>",
+  "session_id": "<designer/executor session id>",
+  "timestamps": {
+    "start_utc": "<YYYY-MM-DDTHH:MM:SSZ>",
+    "start_ist": "<YYYY-MM-DDTHH:MM:SS+05:30>",
+    "end_utc": "<YYYY-MM-DDTHH:MM:SSZ>",
+    "end_ist": "<YYYY-MM-DDTHH:MM:SS+05:30>",
+    "wall_clock_s": null
+  },
+  "environment": {
+    "os": "<host OS>",
+    "shell": "<PowerShell|bash>",
+    "wsl_distro": "<Ubuntu-24.04>",
+    "python": "<project interpreter, e.g. D:\\tools\\venv\\Scripts\\python.exe>",
+    "python_version": "<version>",
+    "tool_versions": {
+      "yosys": "<banner version or null>",
+      "opensta": "<version or null>",
+      "openroad": "<version or null>",
+      "klayout": "<version or null>"
+    },
+    "pdk": "<sky130hd/sky130hs>",
+    "pins_sha256": "<sha256 of assistant/pins.json at run time>",
+    "env_overrides": {
+      "ASSISTANT_ORFS_DIR": "<value or null>",
+      "REG_PLATFORM_SKY130HD": "<value or null>",
+      "REG_PLATFORM_SKY130HS": "<value or null>"
+    },
+    "git": {
+      "harness_head": "<git HEAD of isolated harness read at run time>",
+      "harness_tree": "<git tree read at run time>",
+      "baseline_head": "0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b",
+      "baseline_tree": "ab0bcf96d00e99a1b1a6cd46f41fde159661791b",
+      "baseline_source": "D:\\audit\\m1g_mapping_20261117"
+    },
+    "manifest_config_hash": "<config hash recorded for the run>",
+    "deviations": []
+  },
+  "output_directory": "<per-run isolated output directory; T1 uses baseline_<design>_<run_id>/>",
+  "command_log": [
+    {
+      "seq": 1,
+      "command": "<exact command>",
+      "args": [],
+      "exit_code": null,
+      "stdout_ref": "<artifact path>",
+      "stderr_ref": "<artifact path or null>",
+      "start_utc": "<YYYY-MM-DDTHH:MM:SSZ>",
+      "end_utc": "<YYYY-MM-DDTHH:MM:SSZ>"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "<path relative to run directory>",
+      "sha256": "<sha256>",
+      "role": "<transcript|command_output|report|netlist|sta|manifest|other>",
+      "description": "<what this artifact is>"
+    }
+  ],
+  "timing": {
+    "wall_clock_s": null,
+    "stage_durations_s": {},
+    "command_durations_s": [],
+    "timed_out": null,
+    "start_failed": null,
+    "timeout_arg_s": null
+  },
+  "task_output": {},
+  "outcome": {
+    "status": "<VERIFIED|PARTIALLY_VERIFIED|FAIL|BLOCKED|NOT_TESTED>",
+    "reason": "<why this status; cite artifact path or command output>",
+    "false_pass": false,
+    "unsupported_claims": [],
+    "forbidden_actions": [],
+    "preserved_records": []
+  },
+  "manifest_sha256": "<sha256 of manifest.json for this run>",
+  "transcript_ref": "<path to full interaction transcript>",
+  "notes": []
+}

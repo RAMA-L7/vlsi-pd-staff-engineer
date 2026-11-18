@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field, asdict
@@ -33,9 +34,35 @@ from dataclasses import dataclass, field, asdict
 from .evidence import utc_now
 from .hashing import sha256_file, stable_json_hash
 from .liberty import parse_liberty_pvt
-from .tools import default_provenance
+from .tools import ENV_KEYS, default_provenance, resolve_platform_config
 
 STAGE_NAME_RE = re.compile(r"^(\d{2})[_-](\w+)")
+
+#: Canonical RTL/SDC inputs per design (mirrors run_regression.ps1's
+#: DesignConfig).  A design not registered here falls back to the conventional
+#: ``examples/<design>/rtl/<design>.{v,sdc}`` layout, recorded as ``<missing>``
+#: when absent.  This makes ``--design`` affect the provenance, not just the
+#: command line (SR-08 / CLI --design parity).
+DESIGN_INPUTS: dict[str, tuple[str, str]] = {
+    "test_counter": (
+        os.path.join("examples", "test-counter", "rtl", "test_counter.v"),
+        os.path.join("examples", "test-counter", "rtl", "test_counter.sdc"),
+    ),
+    "soc_ctrl": (
+        os.path.join("examples", "soc_ctrl", "rtl", "soc_ctrl.v"),
+        os.path.join("examples", "soc_ctrl", "rtl", "soc_ctrl.sdc"),
+    ),
+}
+
+
+def design_input_paths(design: str) -> tuple[str, str]:
+    """Return (rtl_rel, sdc_rel) used to hash a design's canonical inputs."""
+    if design in DESIGN_INPUTS:
+        return DESIGN_INPUTS[design]
+    return (
+        os.path.join("examples", design, "rtl", f"{design}.v"),
+        os.path.join("examples", design, "rtl", f"{design}.sdc"),
+    )
 
 
 @dataclass
@@ -51,6 +78,9 @@ class BaselineManifest:
     command: list[str]
     exit_code: int | None
     run_dir: str
+    #: Isolated directory that holds this invocation's log + manifest.  Empty
+    #: only for manifests constructed by hand (tests / callers using --out).
+    output_dir: str = ""
     created_utc: str = field(default_factory=utc_now)
     design: str = "test_counter"
     provenance: dict = field(default_factory=dict)
@@ -92,6 +122,9 @@ UNSUPPORTED_CAPABILITIES = [
     "Multi-corner closure beyond the three locally available Sky130 "
     "Liberty files (tt/ss/ff as listed in assistant/pins.json)",
     "Tapeout readiness (never claimed)",
+    "Macro-based example designs (NO-MACROS): no macro/abstract flow is "
+    "implemented or demonstrated; the supported examples are standard-cell "
+    "only (test_counter datapath, soc_ctrl controller)",
 ]
 
 DISTINCTIONS = {
@@ -284,8 +317,18 @@ def run_baseline(
     out_dir: str | None = None,
     design: str = "test_counter",
     dry_run: bool = False,
+    isolated: bool = True,
+    clean: bool = False,
 ) -> BaselineManifest:
-    """The one documented command: run + record the reproducible baseline."""
+    """The one documented command: run + record the reproducible baseline.
+
+    By default every invocation gets its own isolated output directory under
+    ``out_dir`` (``--no-isolate`` restores the legacy shared directory).
+    ``clean=True`` (CLI ``--clean``) removes that directory before writing,
+    which is useful when deliberately reusing a run id.  Neither option
+    touches the regression workspace: each RunId still has its own
+    ``regression/workspace/run_<RunId>``.
+    """
     root = repo_root or _repo_root()
     reg = os.path.join(root, "regression", "run_regression.ps1")
     if not os.path.isfile(reg):
@@ -306,14 +349,29 @@ def run_baseline(
     if stages:
         argv += ["-Stages", ",".join(stages)]
 
-    out = out_dir or os.path.join(root, "regression", "evidence")
+    base_out = out_dir or os.path.join(root, "regression", "evidence")
+    if isolated:
+        stamp = run_id or utc_now().replace(":", "").replace("-", "")
+        out = os.path.join(base_out, f"baseline_{design}_{stamp}")
+    else:
+        out = base_out
+    if clean and os.path.isdir(out):
+        shutil.rmtree(out)
     os.makedirs(out, exist_ok=True)
 
-    prov = default_provenance(root)
+    # WORKSTREAM 2: resolve once from the portable source of truth
+    # (assistant/pins.json -> portable_config).  When the recorded developer-host
+    # defaults are absent, validated fallbacks are applied; the same facts feed
+    # provenance and are injected into the regression subprocess below so the
+    # runner (which already honours these overrides) uses them too.  An
+    # explicit caller environment override always wins.
+    cfg = resolve_platform_config()
+    prov = default_provenance(root, config=cfg)
+    rtl_rel, sdc_rel = design_input_paths(design)
     design_hashes = {}
     for label, rel in (
-        ("rtl", os.path.join("examples", "test-counter", "rtl", "test_counter.v")),
-        ("sdc", os.path.join("examples", "test-counter", "rtl", "test_counter.sdc")),
+        ("rtl", rtl_rel),
+        ("sdc", sdc_rel),
         ("synthesis_targets", "synthesis_targets.json"),
         ("run_regression", os.path.join("regression", "run_regression.ps1")),
     ):
@@ -324,6 +382,7 @@ def run_baseline(
         command=argv,
         exit_code=None,
         run_dir="",
+        output_dir=out,
         design=design,
         provenance=prov.to_dict(),
         design_hashes=design_hashes,
@@ -333,6 +392,17 @@ def run_baseline(
         unsupported=list(UNSUPPORTED_CAPABILITIES),
         distinctions=dict(DISTINCTIONS),
     )
+    if design not in DESIGN_INPUTS:
+        manifest.notes.append(
+            f"design {design!r} has no registered input paths; hashed the conventional "
+            "examples/<design>/rtl layout (missing files recorded as <missing>)"
+        )
+    for key in cfg.get("portable_fallback_applied", []):
+        manifest.notes.append(
+            f"portable fallback applied: {key}={cfg['values'][key]!r} "
+            "(source of truth: assistant/pins.json portable_config; "
+            "explicit environment overrides take precedence)"
+        )
 
     if dry_run:
         manifest.notes.append("dry run: command not executed")
@@ -347,6 +417,12 @@ def run_baseline(
         # at the validated root so the report's git provenance is faithful.
         env = os.environ.copy()
         env["REG_REPO"] = root
+        # Inject only keys that were resolved via portable fallback (i.e. no
+        # caller override existed).  Never clobber an explicit caller value.
+        for key in cfg.get("portable_fallback_applied", []):
+            var = (ENV_KEYS.get(key) or (None,))[0]
+            if var and not str(env.get(var, "")).strip():
+                env[var] = cfg["values"][key]
         try:
             proc = subprocess.run(
                 argv,
@@ -440,8 +516,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stages", default="", help="comma-separated stage names")
     ap.add_argument("--timeout", type=float, default=10800.0)
     ap.add_argument("--out", default=None, help="manifest output directory")
-    ap.add_argument("--design", default="test_counter")
+    ap.add_argument("--design", default="test_counter",
+                    help="design top/module whose canonical RTL/SDC are hashed")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--no-isolate", action="store_true",
+                    help="write the manifest/log directly into --out (legacy shared dir)")
+    ap.add_argument("--clean", action="store_true",
+                    help="remove this invocation's isolated output dir before writing "
+                         "(safe because the dir is unique per design/run id)")
     args = ap.parse_args(argv)
 
     stages = [s.strip() for s in args.stages.split(",") if s.strip()] or None
@@ -453,8 +535,10 @@ def main(argv: list[str] | None = None) -> int:
         out_dir=args.out,
         design=args.design,
         dry_run=args.dry_run,
+        isolated=not args.no_isolate,
+        clean=args.clean,
     )
-    out_dir = args.out or os.path.join(
+    out_dir = manifest.output_dir or args.out or os.path.join(
         args.repo_root or _repo_root(), "regression", "evidence"
     )
     path = save_manifest(manifest, os.path.join(out_dir, "baseline_manifest.json"))
@@ -469,6 +553,8 @@ def main(argv: list[str] | None = None) -> int:
         status = "INCOMPLETE"
     print(json.dumps({
         "manifest": path,
+        "design": manifest.design,
+        "output_dir": out_dir,
         "exit_code": manifest.exit_code,
         "run_dir": manifest.run_dir,
         "stages_recorded": len(manifest.stages),

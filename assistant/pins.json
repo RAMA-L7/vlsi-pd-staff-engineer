@@ -1,7 +1,63 @@
 {
   "recorded_utc": "2026-11-16T00:00:00Z",
   "recorded_by": "assistant.tools.default_provenance (manual snapshot at remediation start)",
-  "note": "Pins recorded from the actual host. Tools without a reliable batch version flag are pinned by binary SHA-256. Probes re-run these at baseline time; mismatches are reported, never silently accepted.",
+  "note": "Pins recorded from the actual host. Tools without a reliable batch version flag are pinned by binary SHA-256. Probes re-run these at baseline time; mismatches are reported, never silently accepted. All host paths are overridable (see config_overrides and docs/SETUP.md); defaults are the recorded developer-host values, not portable requirements.",
+  "config_overrides": {
+    "note": "Override precedence: first non-empty variable in each list, then the explicit tools_root API argument for tools_root, then the recorded default. Values are validated (non-empty string, no control characters; whitespace-only is treated as unset); path existence is reported in provenance.config.validation, never assumed.",
+    "tools_root": ["ASSISTANT_TOOLS_ROOT", "REG_TOOLS"],
+    "wsl_distro": ["ASSISTANT_WSL_DISTRO"],
+    "orfs_dir": ["ASSISTANT_ORFS_DIR", "ORFS_DIR"],
+    "lib_dir": ["REG_LIB_DIR", "ASSISTANT_LIB_DIR"],
+    "pdk_root": ["ASSISTANT_PDK_ROOT"],
+    "platform_hd": ["REG_PLATFORM_SKY130HD", "ASSISTANT_PLATFORM_HD"],
+    "platform_hs": ["REG_PLATFORM_SKY130HS", "ASSISTANT_PLATFORM_HS"],
+    "klayout_wsl": ["ASSISTANT_KLAYOUT_WSL"],
+    "openroad_wsl": ["ASSISTANT_OPENROAD_WSL"],
+    "netgen": ["ASSISTANT_NETGEN"]
+  },
+  "portable_config": {
+    "schema_version": "1.0",
+    "note": "Portable source of truth for host-default resolution and platform-collateral identity. Fallbacks are VALIDATED values from one developer host, NOT a portability or signoff claim: a different host must re-probe with 'python -m assistant provenance' and report drift. Override precedence is identical to config_overrides: first non-empty environment variable (see config_overrides) > explicit tools_root API argument > portable_fallback (applied ONLY when the recorded default path is absent on this host) > recorded default. Consumers: assistant.tools.resolve_platform_config, assistant.baseline.run_baseline (env injection into the regression) and regression/checks/stage00_preflight.py (platform-collateral checks).",
+    "source_of_truth": "assistant/pins.json -> portable_config",
+    "fallbacks": {
+      "orfs_dir": "D:\\tools\\OpenROAD-flow-scripts",
+      "platform_hd": "D:\\tools\\OpenROAD-flow-scripts\\flow\\platforms\\sky130hd",
+      "platform_hs": "D:\\tools\\OpenROAD-flow-scripts\\flow\\platforms\\sky130hs",
+      "lib_dir": "D:\\tools\\src\\OpenROAD\\src\\sta\\test\\sky130hd"
+    },
+    "fallback_validation": {
+      "validated_utc": "2026-11-18T15:10:00Z",
+      "validated_by": "tech-lead-20261118T150226Z (WORKSTREAM 2)",
+      "orfs_dir_git_head": "25b6429c1644a8682852646bebf19ff164402c76",
+      "orfs_dir_status_count": 1,
+      "note": "Validated on this host only. The dirty-file count matches the recorded upstream_modified_collateral entry; no independent portability beyond this host is claimed."
+    },
+    "collateral_note": "'path' is relative to <platform_hd> unless 'base' is 'platform_hs' (then relative to <platform_hs>). required=true means the wrapped 16-stage regression consumes the file (runner inputFiles / stage scripts / provenance context hashes); required=false means the file exists in ORFS but is NOT consumed by the wrapped regression (informational pin only). 'sha256' is the exact byte hash from the validated host; any mismatch is reported, never silently accepted.",
+    "collateral": [
+      {"key": "lef/sky130_fd_sc_hd.tlef", "path": "lef/sky130_fd_sc_hd.tlef", "sha256": "0cdae79b72254554888e5af386c5b41ef83135fe3b4fd6197c4e3518ed328334", "required": true, "used_by": "common.tcl read_lef; 11_extract.tcl tlef; 13_gds.sh; runner inputFiles"},
+      {"key": "lef/sky130_fd_sc_hd_merged.lef", "path": "lef/sky130_fd_sc_hd_merged.lef", "sha256": "1846913989364748783c84c828d5dbc2168d7b2e0f29debcc58c29711c716a1e", "required": true, "used_by": "common.tcl read_lef; 13_gds.sh; runner inputFiles"},
+      {"key": "gds/sky130_fd_sc_hd.gds", "path": "gds/sky130_fd_sc_hd.gds", "sha256": "15240e34c50e42419336c0f3f498aaeac1e1e403c62134c0eee088225b69dc13", "required": true, "used_by": "13_gds.sh REG_GDS_CELLS; runner PDK context"},
+      {"key": "sky130hd.lyt", "path": "sky130hd.lyt", "sha256": "832ff141d65ed3726d4c0cad209a4a8ab7dae783fb835eb7a9a14e972ce2db88", "required": true, "used_by": "13_gds.sh REG_GDS_TECH; runner DECK context"},
+      {"key": "setRC.tcl", "path": "setRC.tcl", "sha256": "39e4f6e3d09fb5178ee96f0e252101fa004cb2c93c69054be8744cd386569afd", "required": true, "used_by": "11_extract.tcl source; runner inputFiles/DECK"},
+      {"key": "rcx_patterns.rules", "path": "rcx_patterns.rules", "base": "platform_hs", "sha256": "9d7c817622355a4294465f0edcdc302c042a1d44a35b1e17605e60b68cc5ba76", "required": true, "used_by": "11_extract.tcl set_extraction_rules_file from sky130hs (the sky130hd copy is a 30-byte pointer that segfaults OpenROAD)"},
+      {"key": "make_tracks.tcl", "path": "make_tracks.tcl", "sha256": "9b3421af641739f78bf049b67bee17ead6623be1ce02b737e61fbbc3c81886ae", "required": true, "used_by": "04_floorplan.tcl source; runner inputFiles/DECK"},
+      {"key": "pdn.tcl", "path": "pdn.tcl", "sha256": "ac98412b92b31873bea74b4a61133ea618a3ab988535537bfd46e737969ae48a", "required": true, "used_by": "pdn_phase13.tcl provenance; runner inputFiles/PDN context"},
+      {"key": "cdl/sky130hd.cdl", "path": "cdl/sky130hd.cdl", "sha256": "ea3e86abfc92f1de4c16b0eb9268e25ac28c96c523a55b29ebfaef9dd7fdd4c7", "required": true, "used_by": "15_lvs.sh; runner inputFiles/DECK; acceptance deck identity"},
+      {"key": "drc/sky130hd.lydrc", "path": "drc/sky130hd.lydrc", "sha256": "89cb0a6677c8b90350219b5495704cb7526b17365e1094e96af4f8541e28c79f", "required": true, "used_by": "14_drc.sh; runner inputFiles/DECK; acceptance deck identity"},
+      {"key": "lvs/sky130hd.lylvs", "path": "lvs/sky130hd.lylvs", "sha256": "2c90698c902e8cc66cf7a60ce94d5d7eee2ef0097c3aa33a0869cddedafd237f", "required": true, "used_by": "15_lvs.sh; runner inputFiles/DECK; acceptance deck identity"},
+      {"key": "lib/sky130_fd_sc_hd__tt_025C_1v80.lib", "path": "lib/sky130_fd_sc_hd__tt_025C_1v80.lib", "sha256": "ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9", "required": true, "used_by": "runner LIB context (modified-upstream collateral, line-ending normalization)"},
+      {"key": "lef/sky130io_fill.lef", "path": "lef/sky130io_fill.lef", "sha256": "979daf332ea04166b54a2555237d6a8eec2b3d1938e3d4b69f1f027f480bdf57", "required": false, "used_by": "ORFS asset; not consumed by the wrapped regression"},
+      {"key": "sky130hd.lyp", "path": "sky130hd.lyp", "sha256": "f2083d59277fa23bd1dcdf0fd5c1191134f7c49c14e17171916e72af4d68958e", "required": false, "used_by": "ORFS KLayout layer-properties asset; DRC/LVS use .lydrc/.lylvs, not .lyp"},
+      {"key": "lib/sky130_dummy_io.lib", "path": "lib/sky130_dummy_io.lib", "sha256": "bd23872aca5eb9f04fb6f2b9f6d69e8649cb5ad6c5c0b84926cb8cc3919109ce", "required": false, "used_by": "ORFS asset; not consumed by the wrapped regression"},
+      {"key": "fastroute.tcl", "path": "fastroute.tcl", "sha256": "4cc77317958d46b9e4719b629e36438251d4c6af808e684d4804343923f72d7f", "required": false, "used_by": "ORFS asset; custom 09/10 stage scripts do not source it"},
+      {"key": "fill.json", "path": "fill.json", "sha256": "45eab766d8d1eb6288f5a770b6d2ae13ac2f953f8b6f9eb887056839208cafaa", "required": false, "used_by": "ORFS asset; not consumed by the wrapped regression"},
+      {"key": "tapcell.tcl", "path": "tapcell.tcl", "sha256": "45081743bd53b322fbbfabe21e54f33aa08ed2a5047c6d2ac681403606462a4e", "required": false, "used_by": "ORFS asset; manual well ties used instead"},
+      {"key": "config.mk", "path": "config.mk", "sha256": "51d142df78e38413b22574d78af1e45ab13704269cddd4f6d990a43634b1055d", "required": false, "used_by": "ORFS make config; custom stage scripts do not use ORFS make"},
+      {"key": "cells_adders_hd.v", "path": "cells_adders_hd.v", "sha256": "a0359ac68141c195b08827922f8cc8e0bd502a03d3b19ea33a09f79f32522eb3", "required": false, "used_by": "ORFS asset; not consumed by the wrapped regression"},
+      {"key": "cells_clkgate_hd.v", "path": "cells_clkgate_hd.v", "sha256": "ec09f3fb8d09332f436a5daa14d705c3b2cb982860980ab182b19949603cd0a1", "required": false, "used_by": "ORFS asset; not consumed by the wrapped regression"},
+      {"key": "cells_latch_hd.v", "path": "cells_latch_hd.v", "sha256": "6fba38c1216287321fe7b254d47cbe7a9c98817e881b0661394fecaf66258f08", "required": false, "used_by": "ORFS asset; not consumed by the wrapped regression"}
+    ]
+  },
   "tools": [
     {
       "name": "yosys",
@@ -59,8 +115,36 @@
   "platforms": {
     "flow/platforms/sky130hd/lef/sky130_fd_sc_hd_merged.lef": "1846913989364748783c84c828d5dbc2168d7b2e0f29debcc58c29711c716a1e"
   },
+  "extraction": {
+    "note": "SPEF-producing collateral pinned by SHA-256; the engine is OpenROAD (pinned via tools[openroad] and flow[commit]). Hashes are of the exact files present when the pins were recorded; a different host must re-probe and report drift, not assume portability.",
+    "tool": {
+      "name": "openroad (WSL, extract_parasitics + write_spef)",
+      "pinned_via": "tools[openroad] + flow[commit]"
+    },
+    "setRC.tcl": "39e4f6e3d09fb5178ee96f0e252101fa004cb2c93c69054be8744cd386569afd",
+    "rcx_patterns.rules": "9d7c817622355a4294465f0edcdc302c042a1d44a35b1e17605e60b68cc5ba76",
+    "rcx_patterns.rules_source_platform": "sky130hs (the sky130hd copy is a 30-byte pointer that segfaults OpenROAD)",
+    "sky130_fd_sc_hd.tlef": "0cdae79b72254554888e5af386c5b41ef83135fe3b4fd6197c4e3518ed328334"
+  },
+  "decks": {
+    "note": "Physical-verification deck identities used by stages 13-15; recorded from the exact files on the pinned ORFS checkout. See docs/SETUP.md for the modified-upstream-collateral reproduction recipe and its limitations.",
+    "cdl/sky130hd.cdl": "ea3e86abfc92f1de4c16b0eb9268e25ac28c96c523a55b29ebfaef9dd7fdd4c7",
+    "drc/sky130hd.lydrc": "89cb0a6677c8b90350219b5495704cb7526b17365e1094e96af4f8541e28c79f",
+    "lvs/sky130hd.lylvs": "2c90698c902e8cc66cf7a60ce94d5d7eee2ef0097c3aa33a0869cddedafd237f",
+    "sky130hd.lyt": "832ff141d65ed3726d4c0cad209a4a8ab7dae783fb835eb7a9a14e972ce2db88",
+    "regression/stages/15a_lvs_refcdl.tcl": "2924dae7b1e8232678e72d54d9a5a4e99733fb3851ba953e8c891ea6ce83645a"
+  },
+  "upstream_modified_collateral": {
+    "path": "flow/platforms/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib (inside the pinned ORFS checkout)",
+    "observed_sha256": "ec0e1067a35c8bf20b11e58d1e8ac53326067e4dac84a125cc1b917a3518d0d9",
+    "status": "dirty relative to ORFS commit 25b6429c",
+    "reproduction": "docs/SETUP.md -> 'Modified upstream collateral' (line-ending normalization recipe; no proprietary binary is redistributed)",
+    "portable_signoff_claimed": false
+  },
   "design_inputs": {
     "examples/test-counter/rtl/test_counter.v": "b5a84c11b812f8f08f5ac7060e17b8469bc3bf98cafdf9f03e673522199fd7a6",
-    "examples/test-counter/rtl/test_counter.sdc": "b36b66ba0ba549f8cc1a81b34f2ff91025197e590250a5df875cebba842407c6"
-  }
+    "examples/test-counter/rtl/test_counter.sdc": "b36b66ba0ba549f8cc1a81b34f2ff91025197e590250a5df875cebba842407c6",
+    "soc_ctrl_sdc": "ab66de1eb52fda4d52e1585c8ddc7afc39267f781c9e24a65cf03865de0cad5a"
+  },
+  "design_inputs_note": "soc_ctrl_sdc is the approved canonical 10 ns constraint file examples/soc_ctrl/rtl/soc_ctrl.sdc (create_clock -period 10.0, 2 ns data input/output delays; the illegal clk self-delay was removed by the SR-07 physical remediation). The hash is the SHA-256 of the exact raw file bytes and matches regression/configs/soc_ctrl_10ns.json:constraints.sdc_sha256; both were verified at pin time. Re-pin if the approved SDC changes; do not edit the SDC or config from this package."
 }

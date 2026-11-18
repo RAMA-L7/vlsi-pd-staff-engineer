@@ -103,11 +103,12 @@ def test_cli_invalid_na_reason_unknown_rule_fails(tmp_path):
     assert not state.exists()
 
 
-def test_cli_na_valid_reason_succeeds_without_artifacts(tmp_path):
+def test_cli_na_valid_reason_succeeds_with_validated_design_fact(tmp_path):
     state = tmp_path / "state.json"
     proc = run_cli(*record_cmd(
         state, "upf_check", "NOT_APPLICABLE",
         "--na-reason", "NA-RULE:NO-UPF design has no UPF/CPF power intent file in scope",
+        "--design-fact", "has_upf=False",
         reason="not needed",
     ))
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -115,12 +116,15 @@ def test_cli_na_valid_reason_succeeds_without_artifacts(tmp_path):
     ev = next(iter(data["evidence"].values()))
     assert ev["status"] == "NOT_APPLICABLE"
     assert ev["applicability_reason"].startswith("NA-RULE:NO-UPF")
+    assert data["design_facts"]["has_upf"]["value"] is False
 
-    # CLI NA path still produces a validated, non-blocking record.
+    # A validated N/A is non-blocking but is NOT a clean PASS.
     ev2 = run_cli("gate-evaluate", "--state", state, "--gate", "lp_gate",
                   "--required", "upf_check")
     assert ev2.returncode == 0, ev2.stdout + ev2.stderr
-    assert json.loads(ev2.stdout)["decision"] == "PASS"
+    result = json.loads(ev2.stdout)
+    assert result["decision"] == "PASS"
+    assert result["disposition"] == "NOT_APPLICABLE"
 
 
 # ------------------------------------------------------------------- positives

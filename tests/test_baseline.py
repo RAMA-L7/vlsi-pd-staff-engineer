@@ -309,3 +309,146 @@ def test_manifest_native_windows_path_hash(fake_repo, tmp_path):
     view = m.views["mapped_netlist"]
     assert view["path"] == native
     assert view["sha256"] == expected
+
+
+# ------------------------------------------------------------------- SR-08
+def test_design_hashes_follow_the_design_flag(fake_repo, tmp_path):
+    """--design must change the hashed canonical inputs, not just the argv."""
+    sdc = os.path.join(fake_repo, "examples", "soc_ctrl", "rtl", "soc_ctrl.sdc")
+    rtl = os.path.join(fake_repo, "examples", "soc_ctrl", "rtl", "soc_ctrl.v")
+    for p, data in ((rtl, b"module soc_ctrl; endmodule\n"), (sdc, b"create_clock\n")):
+        d = os.path.dirname(p)
+        os.makedirs(d, exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+
+    with patch.object(baseline, "default_provenance", return_value=_empty_provenance()), \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)):
+        m = run_baseline(fake_repo, run_id="design", design="soc_ctrl", dry_run=True,
+                         out_dir=str(tmp_path / "out"))
+
+    assert m.design == "soc_ctrl"
+    assert m.design_hashes["rtl"] == hashlib.sha256(open(rtl, "rb").read()).hexdigest()
+    assert m.design_hashes["sdc"] == hashlib.sha256(open(sdc, "rb").read()).hexdigest()
+    assert m.design_hashes["rtl"] != "<missing>"
+    assert "-Design" in m.command and "soc_ctrl" in m.command
+
+
+def test_isolated_output_dir_by_default(fake_repo, tmp_path):
+    out = str(tmp_path / "out")
+    with patch.object(baseline, "default_provenance", return_value=_empty_provenance()), \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)):
+        m = run_baseline(fake_repo, run_id="isolated", design="test_counter",
+                         dry_run=True, out_dir=out)
+    assert m.output_dir == os.path.join(out, "baseline_test_counter_isolated")
+    assert os.path.isdir(m.output_dir)
+
+
+def test_no_isolate_restores_shared_output_dir(fake_repo, tmp_path):
+    out = str(tmp_path / "out")
+    with patch.object(baseline, "default_provenance", return_value=_empty_provenance()), \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)):
+        m = run_baseline(fake_repo, run_id="shared", dry_run=True,
+                         out_dir=out, isolated=False)
+    assert m.output_dir == out
+
+
+def test_clean_removes_stale_isolated_output(fake_repo, tmp_path):
+    out = str(tmp_path / "out")
+    stale_dir = os.path.join(out, "baseline_test_counter_reuse")
+    os.makedirs(stale_dir, exist_ok=True)
+    stale = os.path.join(stale_dir, "stale.log")
+    with open(stale, "w", encoding="utf-8") as f:
+        f.write("old run\n")
+
+    with patch.object(baseline, "default_provenance", return_value=_empty_provenance()), \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)):
+        m = run_baseline(fake_repo, run_id="reuse", dry_run=True,
+                         out_dir=out, clean=True)
+    assert m.output_dir == stale_dir
+    assert os.path.isdir(stale_dir)
+    assert not os.path.isfile(stale), "clean must remove stale content in the isolated dir"
+
+
+def test_main_forwards_design_and_isolation_flags(capsys, tmp_path):
+    m = _main_manifest(exit_code=0, run_dir="run_ok")
+    m.design = "soc_ctrl"  # what run_baseline would set for --design soc_ctrl
+    m.output_dir = str(tmp_path / "baseline_test_counter_r")
+    saved = {}
+
+    def _save(_manifest, path):
+        saved["path"] = path
+        return path
+
+    with patch.object(baseline, "run_baseline", return_value=m) as rb, \
+         patch.object(baseline, "save_manifest", side_effect=_save):
+        rc = baseline.main([
+            "--design", "soc_ctrl", "--run-id", "r", "--clean",
+            "--out", str(tmp_path),
+        ])
+    assert rc == 0
+    kw = rb.call_args.kwargs
+    assert kw["design"] == "soc_ctrl"
+    assert kw["clean"] is True
+    assert kw["isolated"] is True
+    # Manifest is written into the isolated output dir, not the shared --out.
+    assert saved["path"] == os.path.join(m.output_dir, "baseline_manifest.json")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["design"] == "soc_ctrl"
+    assert payload["output_dir"] == m.output_dir
+
+
+# ------------------------------------------------------------------- WORKSTREAM 2
+def test_run_baseline_injects_resolved_fallback_overrides(fake_repo, tmp_path):
+    """Portable fallbacks reach the runner; the manifest records the resolution."""
+    cfg = {
+        "values": {
+            "orfs_dir": r"D:\fallback-orfs",
+            "platform_hd": r"D:\fallback-orfs\flow\platforms\sky130hd",
+            "platform_hs": r"D:\fallback-orfs\flow\platforms\sky130hs",
+        },
+        "sources": {"orfs_dir": "portable_fallback"},
+        "portable_fallback_applied": ["orfs_dir", "platform_hd", "platform_hs"],
+        "validation": {},
+    }
+    with patch.object(baseline, "resolve_platform_config", return_value=cfg), \
+         patch.object(baseline, "default_provenance", return_value=_empty_provenance()), \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)) as run_mock:
+        m = run_baseline(fake_repo, run_id="fb", out_dir=str(tmp_path / "out"))
+    env = run_mock.call_args.kwargs["env"]
+    assert env["ASSISTANT_ORFS_DIR"] == r"D:\fallback-orfs"
+    assert env["REG_PLATFORM_SKY130HD"] == r"D:\fallback-orfs\flow\platforms\sky130hd"
+    assert env["REG_PLATFORM_SKY130HS"] == r"D:\fallback-orfs\flow\platforms\sky130hs"
+    assert any("portable fallback applied" in n for n in m.notes)
+
+
+def test_run_baseline_does_not_clobber_explicit_override(fake_repo, tmp_path):
+    """A caller-supplied env override always beats the portable fallback."""
+    cfg = {
+        "values": {"platform_hd": r"D:\fallback-hd"},
+        "portable_fallback_applied": ["platform_hd"],
+        "validation": {},
+    }
+    with patch.object(baseline, "resolve_platform_config", return_value=cfg), \
+         patch.object(baseline, "default_provenance", return_value=_empty_provenance()), \
+         patch.dict(os.environ, {"REG_PLATFORM_SKY130HD": r"D:\explicit-hd"}), \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)) as run_mock:
+        run_baseline(fake_repo, run_id="ov", out_dir=str(tmp_path / "out"))
+    assert run_mock.call_args.kwargs["env"]["REG_PLATFORM_SKY130HD"] == r"D:\explicit-hd"
+
+
+def test_run_baseline_passes_resolved_config_to_provenance(fake_repo, tmp_path):
+    """Provenance and the runner share one resolution of the source of truth."""
+    cfg = {"values": {}, "portable_fallback_applied": [], "validation": {}}
+    with patch.object(baseline, "resolve_platform_config", return_value=cfg), \
+         patch.object(baseline, "default_provenance", return_value=_empty_provenance()) as dp, \
+         patch("assistant.baseline.subprocess.run",
+               return_value=subprocess.CompletedProcess(args=[], returncode=0)):
+        run_baseline(fake_repo, run_id="cfg", out_dir=str(tmp_path / "out"))
+    dp.assert_called_once_with(fake_repo, config=cfg)

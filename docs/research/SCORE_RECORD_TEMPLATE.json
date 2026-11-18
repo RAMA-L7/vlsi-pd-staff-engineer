@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0",
+  "schema_name": "agent_perf_study.score_record",
+  "run_id": "<APES-<PHASE>-<TASK>-<MODELKEY>-r<REP>[-retryN]>",
+  "task": "<T1|T2|T3>",
+  "task_difficulty_class": "<easy|medium|hard>",
+  "model": "<exact model id>",
+  "model_short_key": "<gpt62sol|claude52|gemini4h|deepseek41|qwen4max>",
+  "repetition": 1,
+  "rubric_ref": "protocol/SCORING_RUBRIC.md",
+  "rubric_version": "1.0",
+  "spec_ref": "benchmarks/BENCHMARK_SPECS.md",
+  "scorer": "<scorer identity/model>",
+  "scored_utc": "<YYYY-MM-DDTHH:MM:SSZ>",
+  "dimension_scores": {
+    "D1": {
+      "name": "engineering_accuracy",
+      "weight": 20,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    },
+    "D2": {
+      "name": "constraint_quality",
+      "weight": 10,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    },
+    "D3": {
+      "name": "timing_performance",
+      "weight": 15,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    },
+    "D4": {
+      "name": "verification_quality",
+      "weight": 15,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    },
+    "D5": {
+      "name": "failure_detection",
+      "weight": 15,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    },
+    "D6": {
+      "name": "recovery_ability",
+      "weight": 10,
+      "applicable": null,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": [],
+      "na_reason": "<set for T1: no injected fault; excluded and renormalized>"
+    },
+    "D7": {
+      "name": "evidence_integrity",
+      "weight": 10,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    },
+    "D8": {
+      "name": "efficiency",
+      "weight": 5,
+      "applicable": true,
+      "raw": null,
+      "normalized_pct": null,
+      "item_awards": [],
+      "evidence_refs": []
+    }
+  },
+  "raw_total": null,
+  "denominator": null,
+  "normalized_total": null,
+  "excluded_items": [
+    {
+      "dimension": "<D#> or item name>",
+      "status": "<BLOCKED|NOT_TESTED|N/A>",
+      "reason": "<why excluded; cite source>"
+    }
+  ],
+  "outcome_status": "<VERIFIED|PARTIALLY_VERIFIED|FAIL|BLOCKED|NOT_TESTED>",
+  "false_pass": false,
+  "unsupported_claims": [],
+  "scaler_note": "<any anti-overclaiming cap applied, with reference to SCORING_RUBRIC.md §2.3>",
+  "scorer_evidence_refs": [],
+  "notes": []
+}

@@ -11,26 +11,41 @@ This directory contains the Phase 14 RTL-to-GDSII regression framework integrate
 - `negative/` - Negative test suite (`run_negative_tests.sh`, N1-N7)
 - `workspace/` - Run output directory (generated per execution)
 
-## Current Status (2026-11-14)
+## Status (authoritative matrix in root README.md)
 
-- **Integration**: Complete (framework copied/adapted, design-aware generalizations applied).
-- **test_counter**: **15/15 stages PASS**, **88/88 acceptance checks PASS**, **OVERALL PASS** (`workspace/run_20261114T150305Z`).
-- **soc_ctrl**: **PARTIAL** - stages 01-02 PASS, stage 03 (EQY mapped LEC) FAIL, stages 04-15 NOT_EXECUTED (`workspace/run_20261114T152438Z`).
-- **N1-N7 suite**: Preserved; end-to-end execution only partially observed in Phase 18G.
-- **Reproducibility rerun/screenshots**: Not completed in Phase 18G.
+The single current qualification matrix is `README.md` → "Authoritative
+qualification matrix — this checkout" (commit `0a9eb57e…`, tree `ab0bcf96…`).
+It supersedes the snapshot below, which is retained as **dated history**.
+
+- **Integration**: complete (framework copied/adapted, design-aware generalizations applied).
+- **Historical 2026-11-14 (Phase 18G)**: test_counter 15/15 stages PASS, 88/88 checks (`workspace/run_20261114T150305Z`); soc_ctrl PARTIAL — stages 01–02 PASS, stage 03 EQY FAIL, 04–15 NOT_EXECUTED (`workspace/run_20261114T152438Z`).
+- **Later recorded runs**: test_counter baseline `baseline_20261116` / `_r2` (16/16 stages, 95/95 checks; commit `6c4a264`); soc_ctrl full physical `run_pub_m1d_soc_ctrl_full` (14/16, retained SS-timing and LVS-gate failures). Neither is a fresh run against `0a9eb57`.
+- **N1–N7 suite**: preserved; end-to-end detection recorded in Phase 15 (2026-11-14).
+- **Reproducibility**: two-run comparison and timestamp stripping documented in `docs/REGRESSION.md` and `docs/reviews/remediation-report.md`.
 
 ## Usage
 
+Use `$env:REG_REPO` (or `-Repo`) rather than a hard-coded checkout path. The
+project interpreter avoids the Microsoft Store `python` alias stub.
+
 ```powershell
-# Full regression
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\audit\repo\regression\run_regression.ps1 -Design test_counter
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\audit\repo\regression\run_regression.ps1 -Design soc_ctrl
+# Preflight — exact missing-dependency report (see docs/REGRESSION.md)
+& D:\tools\venv\Scripts\python.exe regression\checks\stage00_preflight.py `
+    regression\project_config.template.json --out-dir <isolated-dir>
+
+# One documented baseline command (isolated output dir per invocation)
+& D:\tools\venv\Scripts\python.exe -m assistant baseline --design test_counter --run-id <ID>
+& D:\tools\venv\Scripts\python.exe -m assistant baseline --design soc_ctrl --run-id <ID>
+
+# Direct runner (equivalent; -Design forwarded by the CLI baseline command)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File regression\run_regression.ps1 -Design test_counter
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File regression\run_regression.ps1 -Design soc_ctrl
 
 # Selective stages
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\audit\repo\regression\run_regression.ps1 -Design test_counter -Stages 01_synthesis,02_lec_generic
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File regression\run_regression.ps1 -Design test_counter -Stages 01_synthesis,02_lec_generic
 
 # Validate existing run
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\audit\repo\regression\run_regression.ps1 -Design test_counter -ValidateOnly -RunDir D:\audit\repo\regression\workspace\run_20261114T150305Z
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File regression\run_regression.ps1 -Design test_counter -ValidateOnly -RunDir regression\workspace\run_20261114T150305Z
 ```
 
 ## 15-Stage Flow

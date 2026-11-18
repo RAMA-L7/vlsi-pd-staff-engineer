@@ -100,13 +100,23 @@ def test_injected_netlist_corruption_detected_by_lec(tmp_path):
         or "equivalence successfully proven" not in out.lower()
     )
 
-    # record as evidence and confirm the gate blocks
+    # Record as evidence and confirm the gate blocks.  This check used a REAL
+    # yosys invocation, so bind real provenance: the actual command and exit
+    # code, the concrete analysis view, the captured LEC log as a report file
+    # (hashed by Evidence.from_run) and the actual yosys version from its banner.
+    import re
+    lec_log = tmp_path / "lec_proof.log"
+    lec_log.write_text(out, encoding="utf-8", errors="replace")
+    version = re.search(r"Yosys\s+([0-9][0-9A-Za-z.\-]*)", out)
     ctl = GateController(str(tmp_path / "state.json"))
     ctl.record_evidence(
         Evidence.from_run(
             check_id="lec", status=Status.FAIL,
             reason="injected corruption: equivalence not proven",
+            command=["yosys", "-s", str(lec)],
             exit_code=proc.returncode, analysis_view="MAPPED_NETLIST",
+            tool_versions={"yosys": version.group(1) if version else "oss-cad-suite (local build)"},
+            reports=[str(lec_log)],
         )
     )
     gd = ctl.evaluate_gate("lec_gate", ["lec"])
@@ -128,9 +138,16 @@ def test_stale_evidence_injected_and_detected(tmp_path):
     rtl = tmp_path / "d.v"
     rtl.write_text("v1", encoding="utf-8")
     ctl.register_input("rtl", str(rtl))
+    # Synthetic evidence for a staleness unit test: no real tool ran, so opt
+    # out of strict tool provenance with an explicit, labelled reason.  The
+    # gate's stall/FAIL decision logic is unchanged.
     ctl.record_evidence(
-        Evidence.from_run(check_id="lec", status=Status.PASS, reason="proven",
-                          exit_code=0, analysis_view="MAPPED_NETLIST")
+        Evidence.from_run(
+            check_id="lec", status=Status.PASS,
+            reason="proven (SIMULATED unit-test evidence for staleness injection)",
+            exit_code=0, analysis_view="MAPPED_NETLIST",
+        ),
+        strict=False, simulated="unit-test stale-evidence injection",
     )
     assert ctl.evaluate_gate("g", ["lec"]).passed
     rtl.write_text("v2-injected-change", encoding="utf-8")
@@ -145,14 +162,16 @@ def test_missing_library_injected(tmp_path):
                      lib_path=r"Z:\missing\lib.lib")
     res = validate_pvt_claim(claim)
     assert res["status"] == "NOT_RUN"
-    # gate blocks on NOT_RUN evidence
+    # gate blocks on NOT_RUN evidence.  Synthetic unit-test record: no real
+    # tool ran, so opt out of strict tool provenance with an explicit label.
     ctl = GateController(str(tmp_path / "state.json"))
     ctl.record_evidence(
         Evidence.from_run(
             check_id="pvt_check", status=Status.NOT_RUN,
-            reason="referenced Liberty file missing locally",
+            reason="SIMULATED unit-test evidence: referenced Liberty file missing locally",
             library_hashes={"tt": "<missing>"},
-        )
+        ),
+        strict=False, simulated="unit-test missing-library injection",
     )
     gd = ctl.evaluate_gate("synth_gate", ["pvt_check"])
     assert not gd.passed
@@ -166,13 +185,65 @@ def test_malformed_report_injected():
 
 
 # 6. ECO worsening a protected metric ---------------------------------------
+def _simulated_eco_verify(tmp_path):
+    """DETERMINISTIC SIMULATED verification provider (no real EDA tool).
+
+    ``verify()`` is mandatory for every substantive ECO change class.  This
+    provider returns fresh, provenance-bound in-memory Evidence for every check
+    registered by the ``logic_optimization`` policy: LEC PASS, STA PASS and
+    physical DRC explicitly NOT_APPLICABLE with the *registered* NA-RULE reason
+    (never a silent omission).  The report file is a deterministic local test
+    artifact, so provenance binding is real without invoking any tool.
+    """
+    from assistant.eco import CHANGE_CLASS_POLICY
+
+    drc_na_reason = CHANGE_CLASS_POLICY["logic_optimization"][2].na_reason
+    report = tmp_path / "simulated_eco_check.txt"
+    report.write_text(
+        "SIMULATED provider report: deterministic test artifact\n", encoding="utf-8"
+    )
+
+    def evidence(check_id, status, reason, *, na_reason=None):
+        kwargs = dict(
+            reason=reason,
+            command=["simulated_provider", "--check", check_id],
+            exit_code=0,
+            analysis_view="MAPPED_NETLIST",
+            tool_versions={"simulated_provider": "1.0"},
+            reports=[str(report)],
+            duration_s=0.01,
+        )
+        if na_reason is not None:
+            kwargs["applicability_reason"] = na_reason
+        return Evidence.from_run(check_id, status, **kwargs)
+
+    def verify():
+        return [
+            evidence("eco_lec", Status.PASS, "SIMULATED LEC: equivalent"),
+            evidence("eco_sta", Status.PASS, "SIMULATED STA: timing targets met"),
+            evidence(
+                "eco_physical_drc", Status.NOT_APPLICABLE,
+                "SIMULATED DRC: not applicable to a logic ECO",
+                na_reason=drc_na_reason,
+            ),
+        ]
+
+    return verify
+
+
 def test_eco_worsening_protected_metric_rolls_back(tmp_path):
     from assistant.controller import GateController as GC
 
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "d.v").write_text("golden", encoding="utf-8")
-    eco = EcoManager(str(ws), GC(str(tmp_path / "state.json")),
+    ctl = GC(str(tmp_path / "state.json"))
+    # SIMULATED design facts backing the registered N/A policy (identical to
+    # the ECO verification tests): the controller requires corroborating facts
+    # for every NOT_APPLICABLE record, even in labelled simulated mode.
+    for fact in ("has_macros", "has_upf", "has_clock_gates", "has_analog"):
+        ctl.register_design_fact(fact, False, source="unit-test simulated design")
+    eco = EcoManager(str(ws), ctl,
                      checkpoint_dir=str(tmp_path / "ck"),
                      experiment_log=str(tmp_path / "exp.json"))
     res = eco.run_experiment(
@@ -186,20 +257,33 @@ def test_eco_worsening_protected_metric_rolls_back(tmp_path):
             ProtectedMetric("area_um2", baseline=100.0, tolerance=0.0,
                             direction="lower_is_better")
         ],
+        # DETERMINISTIC SIMULATED provider: verification PASSES, so the only
+        # reason to roll back is the injected protected-metric regression.
+        # Explicit simulated label: the controller's strict tool provenance is
+        # the default, so synthetic verification evidence must opt out by name.
+        verify=_simulated_eco_verify(tmp_path),
+        simulated="unit-test ECO failure injection",
     )
     assert res.status == "ROLLED_BACK"
+    assert res.rollback_performed and res.rollback_verified
+    assert res.protected["area_um2"]["violated"] is True
+    assert res.protected["area_um2"]["after"] == 150.0
     assert (ws / "d.v").read_text(encoding="utf-8") == "golden"
 
 
 # 7. formal timeout ---------------------------------------------------------
 def test_formal_timeout_injected(tmp_path):
     ctl = GateController(str(tmp_path / "state.json"))
+    # Synthetic timeout record (the exit code is deliberately unknown): opt
+    # out of strict tool provenance with an explicit label.  INCONCLUSIVE must
+    # still block the gate.
     ctl.record_evidence(
         Evidence.from_run(
             check_id="formal_lec", status=Status.INCONCLUSIVE,
-            reason="formal timeout after 600s (injected)", exit_code=None,
-            analysis_view="MAPPED_NETLIST",
-        )
+            reason="SIMULATED unit-test evidence: formal timeout after 600s (injected)",
+            exit_code=None, analysis_view="MAPPED_NETLIST",
+        ),
+        strict=False, simulated="unit-test formal-timeout injection",
     )
     assert not ctl.evaluate_gate("lec_gate", ["formal_lec"]).passed
 

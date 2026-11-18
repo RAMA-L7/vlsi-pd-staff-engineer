@@ -4,12 +4,11 @@
     "application": "PROPOSAL NOT APPLIED - this file is an evidence-dir proposal only. It has NOT been committed, published, or copied into any repository. Tracking/publication requires the normal repository change-control steps.",
     "workstream": "Milestone 1C workstream 4 - establish authoritative 10 ns constraint/config source",
     "generated": "2026-11-16",
-    "authority_statement": "The canonical soc_ctrl SDC (SHA-256 2a9126e716f834f255fe358aa8962ae619ffec50418e1104690a49eda47be644) is the authoritative constraint source. This config is a design-specific wrapper that points to it; it does not override the SDC. The 7.0 ns period in the published config is NOT approved."
+    "authority_statement": "The canonical soc_ctrl SDC (SHA-256 ab66de1eb52fda4d52e1585c8ddc7afc39267f781c9e24a65cf03865de0cad5a) is the authoritative constraint source. This config is a design-specific wrapper that points to it; it does not override the SDC. The 7.0 ns period in the published config is NOT approved.",
+    "_sdc_sha_history": "Prior pins 2a9126e716f834f255fe358aa8962ae619ffec50418e1104690a49eda47be644 (proposal-time), 640071510528b53e4433e9e16f2196b624f047bf35b1979897aa23623a4f826d (published tree) and fa0c9bf51f7788e21605b3b2dd00e7e4cef65a62f3fd976625d977621b8d4a5b (first SR-07 draft using remove_from_collection, unsupported by OpenSTA 3.1.0) are stale. The current hash uses `get_ports -filter {direction == input && name != clk}` to exclude clk (OpenSTA Warning 441); period 10.0 ns and 2 ns data I/O delays are unchanged."
   },
-
   "project": "example_soc_subsystem",
   "top_module": "soc_ctrl",
-
   "clock": {
     "name": "clk",
     "period_ns": 10.0,
@@ -20,14 +19,12 @@
       "sdc_declares_uncertainty": false
     }
   },
-
   "constraints": {
     "sdc_file": "examples/soc_ctrl/rtl/soc_ctrl.sdc",
-    "sdc_sha256": "2a9126e716f834f255fe358aa8962ae619ffec50418e1104690a49eda47be644",
-    "_sdc_file_note": "Points to the tracked canonical repository path (repo-relative). This replaces the published config's dangling reference 'constraints/design.sdc', which does not exist in D:\\audit\\mq_pd_20261116 or in D:\\audit\\repo. The canonical SDC is currently UNTRACKED in the repo (?? examples/soc_ctrl/rtl/); committing it under change control is a prerequisite for this path to become a truly tracked authoritative source.",
+    "sdc_sha256": "ab66de1eb52fda4d52e1585c8ddc7afc39267f781c9e24a65cf03865de0cad5a",
+    "_sdc_file_note": "Points to the tracked canonical repository path (repo-relative). The canonical SDC is tracked at baseline 0a9eb57 / tree ab0bcf96 with SHA-256 ab66de1eb52fda4d52e1585c8ddc7afc39267f781c9e24a65cf03865de0cad5a; theclk self-delay fix is applied and the config pin matches the live bytes.",
     "upf_file": null
   },
-
   "targets": {
     "wns_ns": 0.0,
     "tns_ns": 0.0,
@@ -46,7 +43,6 @@
       "detail": "Transition and fanout are aligned to the authoritative SDC lines 18-19 (set_max_transition 1.5, set_max_fanout 30). The published config's stricter 0.7 ns / 20 values are NOT applied by this proposal; any divergence must be resolved in the SDC under change control."
     }
   },
-
   "_comparison_to_published_config": {
     "published_file": "D:\\audit\\mq_pd_20261116\\synthesis_targets.json",
     "published_sha256": "0ad1e5d650ffcfcb2f3b0cf839b0df15dacbcff72721a4917aad273987119ebe",

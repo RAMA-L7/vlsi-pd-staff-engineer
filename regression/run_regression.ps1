@@ -272,6 +272,61 @@ $StageTable = @(
 
 $Mandatory = @($StageTable | ForEach-Object { $_.N })
 
+# --------------------------------------------------------------------------- SR-02 gate policy
+# Explicit dependency table + authoritative required-acceptance checks per stage.
+# This mirrors the pure policy model in checks/acceptance.py (STAGE_DEPS,
+# REQUIRED_CHECKS, STAGE_INPUT_TAGS).  No stage is authorised to run until every
+# dependency has fresh engineering acceptance AND its evidence is persisted.
+$RequiredChecks = @{
+  '00_stage00' = @('stage00_result_exists','stage00_report_exists','stage00_overall_pass','stage00_no_mandatory_failures')
+  '01_synthesis' = @('generic_netlist_exists','mapped_netlist_exists','netlists_parse','cell_counts_recorded','sky130_cells_present_after_mapping','sequential_cell_mapped','no_unresolved_modules','yosys_reported_no_errors')
+  '02_lec_generic' = @('positive_proved','no_unproven_points','compare_points_generated','negative_control_detected','negative_control_netlist_differs')
+  '03_lec_mapped' = @('genuine_sky130_models_used','official_preprocessor_used','all_partitions_proved','designs_equivalent','negative_control_rejected')
+  '04_floorplan' = @('die_area_valid','rows_and_sites_defined','pins_assigned','tapcells_inserted','odb_written')
+  '05_placement' = @('functional_cells_contiguous','detailed_placement_completed','no_placement_violations','odb_written')
+  '06_cts' = @('clock_sinks_identified','clock_tree_built','clock_connectivity_reported','odb_written')
+  '07_pdn' = @('power_and_ground_nets_correct','power_grid_geometry_generated','specialnets_contains_routed_power','odb_and_def_written')
+  '08_power_connectivity' = @('check_power_grid_vdd','check_power_grid_vss','stdcell_power_pins_connected','welltie_connectivity_verified','no_disconnected_power_terminals','specialnets_contains_routed_power')
+  '09_global_route' = @('global_routing_completed','guide_file_written','odb_written')
+  '10_detailed_route' = @('detailed_routing_completed','router_violations_zero','routed_def_and_odb_written')
+  '11_extract' = @('spef_generated','parasitic_segments_nonzero','resistance_segments_nonzero','extracted_design_matches_routed','spef_covers_design_nets')
+  '12_sta' = @('all_corners_reported','libraries_loaded','constraints_applied','spef_loaded','setup_reports_generated','paths_analysed_per_corner','no_timing_violators','wns_recorded_per_corner','wns_non_negative','no_unconstrained_paths')
+  '13_gds' = @('gds_generated','topcell_name_correct','stdcell_geometry_merged','nonempty_geometry','via_cut_layers_present','power_geometry_present','real_top_level_port_labels_preserved')
+  '14_drc' = @('all_rule_categories_execute','zero_actual_violations','helper_regions_excluded','report_db_saved','report_db_reopens','stored_totals_agree_with_log','drc_deck_identity')
+  '15_lvs' = @('official_deck_used','lvs_deck_identity','genuine_sky130_cdl_used','reference_from_physical_database','topcell_configured','verdict_match','lvs_database_written','extracted_netlist_written','device_counts_match','no_unmatched_devices','no_unmatched_nets','no_unmatched_subcircuits','power_connectivity_correct','power_structure_verified','independent_structure_match')
+}
+foreach ($n in $Mandatory) {
+  $rc = @($RequiredChecks[$n])
+  if ($rc.Count -eq 0) { throw "SR-02: stage $n has no required acceptance checks - empty gate is illegal" }
+}
+$StageDeps = @{}
+$StageArt = @{}
+foreach ($s in $StageTable) { $StageDeps[$s.N] = @($s.Deps); $StageArt[$s.N] = @($s.Art) }
+
+# Provenance tags whose change invalidates a stage (and its descendants).
+$StageTags = @{
+  '00_stage00' = @('RTL','SDC','TOOLS','CONFIG')
+  '01_synthesis' = @('RTL','SDC','TOOLS','CONFIG')
+  '02_lec_generic' = @('RTL','SDC','TOOLS','CONFIG')
+  '03_lec_mapped' = @('RTL','SDC','PDK','DECK','TOOLS','CONFIG')
+  '04_floorplan' = @('RTL','SDC','PDK','LIB','PDN','TOOLS','CONFIG')
+  '05_placement' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '06_cts' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '07_pdn' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '08_power_connectivity' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '09_global_route' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '10_detailed_route' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '11_extract' = @('RTL','SDC','PDK','LIB','PDN','DECK','TOOLS','CONFIG')
+  '12_sta' = @('SDC','PDK','LIB','DECK','TOOLS','CONFIG')
+  '13_gds' = @('PDK','LIB','DECK','TOOLS','CONFIG')
+  '14_drc' = @('PDK','DECK','TOOLS','CONFIG')
+  '15_lvs' = @('PDK','DECK','LIB','TOOLS','CONFIG')
+}
+$TagField = @{
+  RTL='context_rtl'; SDC='context_sdc'; LIB='context_lib'; PDK='context_pdk'
+  DECK='context_deck'; PDN='context_pdn'; TOOLS='context_tools'; CONFIG='context_config'
+}
+
 # --------------------------------------------------------------------------- helpers
 function Write-Json($obj, $path) {
   $json = $obj | ConvertTo-Json -Depth 12
@@ -281,6 +336,34 @@ function Write-Json($obj, $path) {
 function Get-Sha256([string]$p) {
   if (-not (Test-Path $p)) { return $null }
   return (Get-FileHash -Algorithm SHA256 $p).Hash.ToLower()
+}
+
+function Get-Sha256Text([string]$text) {
+  return [BitConverter]::ToString(
+    [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).Replace('-','').ToLower()
+}
+
+function Get-TransitiveDeps([string]$name) {
+  # Iterative: a nested function would shadow $out in its own scope.
+  $out = @()
+  $queue = @($StageDeps[$name])
+  while ($queue.Count -gt 0) {
+    $d = $queue[0]
+    $queue = @($queue | Select-Object -Skip 1)
+    if ($out -notcontains $d) {
+      $out += $d
+      $queue += @($StageDeps[$d])
+    }
+  }
+  return @($out)
+}
+
+function Get-Descendants([string]$name) {
+  $out = @()
+  foreach ($n in $Mandatory) {
+    if ((Get-TransitiveDeps $n) -contains $name) { $out += $n }
+  }
+  return @($out)
 }
 
 function Write-EnvFile([hashtable]$map, [string]$path, [string]$style) {
@@ -319,6 +402,16 @@ $report = [ordered]@{
   pdk_revisions    = @{}
   stages           = @()
   artifacts        = @{}
+  # SR-02: three distinct verdicts.  process_completion = did the tool run;
+  # engineering_acceptance = did independent checks prove the result;
+  # qualification = both of the above plus persistent, verifiable provenance.
+  process_completion       = 'INCOMPLETE'
+  engineering_acceptance   = 'NOT_TESTED'
+  qualification            = 'INCONCLUSIVE'
+  evidence_persistence_failures = @()
+  gate_schema           = 'sr02-stage-gating-1.0'
+  gate_ledger           = $LedgerPath
+  gate_policy           = @{ stage_deps = $StageDeps; required_checks = $RequiredChecks }
   overall          = 'INCONCLUSIVE'
   not_executed     = @()
   failure_messages = @()
@@ -389,6 +482,126 @@ if (Test-Path $pdkRoot) {
   }
 }
 
+# --------------------------------------------------------------------------- SR-02 provenance context
+# A context value is captured for each tag.  Resume / partial runs must match
+# these values against the persisted gate ledger; any mismatch invalidates the
+# stage and all of its descendants.
+function ContextHashOf([string[]]$paths) {
+  $parts = @()
+  foreach ($p in $paths) {
+    $h = if ($report.inputs.ContainsKey($p)) { $report.inputs[$p] } else { (Get-Sha256 $p) }
+    $parts += "$p=$h"
+  }
+  return (Get-Sha256Text ($parts -join ';'))
+}
+$CurrentContext = @{
+  RTL   = if ($report.inputs.ContainsKey($Rtl)) { $report.inputs[$Rtl] } else { (Get-Sha256 $Rtl) }
+  SDC   = if ($report.inputs.ContainsKey($Sdc)) { $report.inputs[$Sdc] } else { (Get-Sha256 $Sdc) }
+  LIB   = ContextHashOf @((Join-Path $LibDir 'sky130_fd_sc_hd__tt_025C_1v80.lib'), (Join-Path $LibDir 'sky130_fd_sc_hd__ss_n40C_1v40.lib'), (Join-Path $LibDir 'sky130_fd_sc_hd__ff_n40C_1v95.lib'), (Join-Path $Platform 'lib\sky130_fd_sc_hd__tt_025C_1v80.lib'))
+  PDK   = Get-Sha256Text ((($report.pdk_revisions | ConvertTo-Json -Compress -Depth 6)) + ';' + (ContextHashOf @((Join-Path $Platform 'lef\sky130_fd_sc_hd.tlef'), (Join-Path $Platform 'lef\sky130_fd_sc_hd_merged.lef'), (Join-Path $Platform 'gds\sky130_fd_sc_hd.gds'))))
+  DECK  = ContextHashOf @((Join-Path $Platform 'cdl\sky130hd.cdl'), (Join-Path $Platform 'lvs\sky130hd.lylvs'), (Join-Path $Platform 'drc\sky130hd.lydrc'), (Join-Path $Platform 'setRC.tcl'), (Join-Path $Platform 'make_tracks.tcl'), (Join-Path $Platform 'sky130hd.lyt'))
+  PDN   = ContextHashOf @($PdnTcl, (Join-Path $Platform 'pdn.tcl'))
+  TOOLS = Get-Sha256Text ($report.tools | ConvertTo-Json -Compress -Depth 6)
+  CONFIG = Get-Sha256Text ((@($Design,$Platform,$PlatformHS,$LibDir,$Repo,$Oss,$YosysWin,$Python,$PdnTcl) -join '|'))
+}
+$CurrentScriptHashes = @{}
+foreach ($s in $StageTable) {
+  $sp = Join-Path $StageDir $s.File
+  $CurrentScriptHashes[$s.N] = Get-Sha256Text "$($s.File)|$(if (Test-Path $sp) { Get-Sha256 $sp } else { 'MISSING' })"
+}
+
+$LedgerPath = Join-Path $RunDir 'gate_ledger.json'
+function Load-Ledger {
+  if (Test-Path $LedgerPath) {
+    try {
+      $obj = Get-Content $LedgerPath -Raw | ConvertFrom-Json
+      $h = @{}
+      foreach ($p in $obj.stages.PSObject.Properties) { $h[$p.Name] = $p.Value }
+      return @{ schema_version = $obj.schema_version; stages = $h }
+    } catch { Write-Host "  gate ledger unreadable: $($_.Exception.Message)" }
+  }
+  return @{ schema_version = 'sr02-stage-gating-1.0'; stages = @{} }
+}
+function Save-Ledger($ledger) {
+  try {
+    # Convert nested ordered hashtables/arrays to a plain object graph.
+    $stagesObj = [ordered]@{}
+    foreach ($k in ($ledger.stages.Keys | Sort-Object)) { $stagesObj[$k] = $ledger.stages[$k] }
+    Write-Json ([ordered]@{ schema_version = 'sr02-stage-gating-1.0'; stages = $stagesObj }) $LedgerPath
+    return (Test-Path $LedgerPath)
+  } catch { Write-Host "  gate ledger write failed: $($_.Exception.Message)"; return $false }
+}
+$ledger = Load-Ledger
+
+function Get-LedgerEntry([string]$name) {
+  if ($ledger.stages.ContainsKey($name)) { return $ledger.stages[$name] }
+  return $null
+}
+
+# Revalidation: a prior PASS + existing artifacts is NOT sufficient.
+function Test-StageResumeValid([string]$name) {
+  $reasons = @()
+  $entry = Get-LedgerEntry $name
+  if ($null -eq $entry) {
+    return @{ ok = $false; reasons = @('no prior accepted gate-ledger entry') }
+  }
+  if ($entry.qualification -ne 'QUALIFIED_PASS') { $reasons += 'prior qualification is not QUALIFIED_PASS' }
+  if (-not $entry.evidence_persisted) { $reasons += 'prior evidence/provenance persistence failed' }
+  if ($entry.script_hash -ne $CurrentScriptHashes[$name]) { $reasons += 'stage script changed' }
+  foreach ($tag in @($StageTags[$name])) {
+    $field = $TagField[$tag]
+    if ($entry.$field -ne $CurrentContext[$tag]) { $reasons += "provenance changed: $tag" }
+  }
+  foreach ($a in @($StageArt[$name])) {
+    $p = Join-Path $RunDir $a
+    $h = Get-Sha256 $p
+    $old = $null
+    if ($entry.artifacts) { foreach ($ar in $entry.artifacts) { if ($ar.path -eq $a) { $old = $ar.sha256 } } }
+    if (-not $h) { $reasons += "artifact missing: $a" }
+    elseif ($old -ne $h) { $reasons += "artifact modified: $a" }
+  }
+  return @{ ok = ($reasons.Count -eq 0); reasons = $reasons }
+}
+
+# Compute invalidation once, before any stage is authorised.
+$invalidated = @{}
+foreach ($name in $Mandatory) {
+  $rv = Test-StageResumeValid $name
+  if (-not $rv.ok) { $invalidated[$name] = $rv.reasons }
+}
+# Invalidation propagates to every descendant.
+foreach ($name in $Mandatory) {
+  if ($invalidated.ContainsKey($name)) {
+    foreach ($d in (Get-Descendants $name)) { $invalidated[$d] = @("invalidated by ancestor $name") }
+  }
+}
+if ($Resume -and $invalidated.Count -gt 0) {
+  Write-Host "SR-02: invalidated stages (re-execution required): $(($invalidated.Keys | Sort-Object) -join ', ')"
+}
+
+function Test-StagePrereqs([string]$name, $doneMap) {
+  $reasons = @()
+  foreach ($d in (Get-TransitiveDeps $name)) {
+    if ($doneMap.ContainsKey($d)) {
+      $dr = $doneMap[$d]
+      if ($dr.qualification_status -ne 'QUALIFIED_PASS' -or
+          $dr.process_status -notin @('COMPLETED','VALIDATION_ONLY') -or
+          -not $dr.evidence_persisted) {
+        $reasons += "dependency $d has no fresh authoritative acceptance"
+      }
+    } else {
+      # Partial-stage run: dependency must have valid prior evidence.
+      if ($Resume) {
+        $rv = Test-StageResumeValid $d
+        if (-not $rv.ok) { $reasons += "dependency $d has no valid prior evidence: $($rv.reasons -join '; ')" }
+      } else {
+        $reasons += "dependency $d not executed in this run (partial-stage run requires prerequisites)"
+      }
+    }
+  }
+  return @{ ok = ($reasons.Count -eq 0); reasons = $reasons }
+}
+
 # --------------------------------------------------------------------------- manifest lifecycle (Phase 33)
 $ManifestMgr = Join-Path $CheckDir 'manifest_manager.py'
 $RunManifest = Join-Path $RunDir 'run_manifest.json'
@@ -404,8 +617,10 @@ function Invoke-Manifest([string[]]$margs) {
 # initialize run manifest with identity/tooling
 $toolsJson = ($report.tools | ConvertTo-Json -Compress -Depth 6)
 $initArgs = @('init', $RunDir, '--run-id', $RunId, '--project-name', $Design, '--project-id', $Design, '--top-module', $Design, '--tool-versions-json', $toolsJson)
-$mi = Invoke-Manifest $initArgs
-if ($mi) { Write-Host "  manifest init rc=$($mi.rc)" }
+if (-not $ValidateOnly) {
+  $mi = Invoke-Manifest $initArgs
+  if ($mi) { Write-Host "  manifest init rc=$($mi.rc)" }
+}
 
 # --------------------------------------------------------------------------- stage execution
 $statusFile = Join-Path $RunDir 'stage_status.json'
@@ -426,92 +641,198 @@ if ($Stages.Count -gt 0) {
   $order = $Mandatory | Where-Object { $flat -contains $_ }
   if ($order.Count -eq 0) { throw "No known stage matched -Stages. Known: $($Mandatory -join ', ')" }
 }
+if ($ValidateOnly -and $Stages.Count -gt 0) {
+  # Fresh validation of a partial scope still needs its prerequisites validated.
+  $expanded = @()
+  foreach ($n in $order) {
+    if ($expanded -notcontains $n) { $expanded += $n }
+    foreach ($d in (Get-TransitiveDeps $n)) { if ($expanded -notcontains $d) { $expanded += $d } }
+  }
+  $order = @($Mandatory | Where-Object { $expanded -contains $_ })
+}
 
 $stageResults = @()
+$doneMap = @{}
+$persistFailures = @()
+$blockedRemaining = $false
+$accJson = Join-Path $RunDir 'acceptance.json'
+$accTxt = Join-Path $RunDir 'acceptance.txt'
+$statusTarget = if ($ValidateOnly) { Join-Path $RunDir 'validation_status.json' } else { $statusFile }
+if ($ValidateOnly) { $status = [ordered]@{ stages = @() } }
+
 foreach ($name in $order) {
   $s = $StageTable | Where-Object { $_.N -eq $name }
   $logName = "$name.log"
   $logWin = Join-Path $LogDir $logName
   $logWsl = ConvertTo-WslPath $logWin
-
-  # --- resume support -------------------------------------------------------
-  if ($Resume -and $prevStatus.ContainsKey($name)) {
-    $ps = $prevStatus[$name]
-    $artifactsPresent = $true
-    foreach ($a in $s.Art) {
-      if (-not (Test-Path (Join-Path $RunDir $a))) { $artifactsPresent = $false; break }
-    }
-    if ($ps.executed -and $ps.status -eq 'PASS' -and $artifactsPresent) {
-      Write-Host ""
-      Write-Host "--------- stage $name : SKIPPED (resume, already PASS)"
-      $stageResults += [ordered]@{
-        name = $name; description = $s.Desc; kind = $s.Kind; domain = ''
-        executed = $true; skipped = $true; exit_code = $ps.exit_code
-        started = $ps.started; ended = $ps.ended; duration_s = $ps.duration_s
-        log = $logWin; artifacts = @($s.Art); checks = @()
-        status = 'PASS'
-      }
-      continue
-    }
-  }
-
-  Write-Host ""
-  Write-Host "--------- stage $name : $($s.Desc)"
-  $t0 = Get-Date
-  $rc = 1
-  $domain = ''
-  try {
-    switch ($s.Kind) {
-      'win' {
-        $domain = 'windows'
-        foreach ($k in $EnvWin.Keys) { Set-Item -Path "Env:$k" -Value $EnvWin[$k] }
-        $ps1 = Join-Path $StageDir $s.File
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ps1
-        $rc = $LASTEXITCODE
-      }
-      'wsl-bash' {
-        $domain = 'wsl'
-        $scriptWsl = ConvertTo-WslPath (Join-Path $StageDir $s.File)
-        $cmd = "source '$envWslWslPath' && bash '$scriptWsl' > '$logWsl' 2>&1"
-        & wsl.exe -d Ubuntu-24.04 -- bash -c $cmd
-        $rc = $LASTEXITCODE
-      }
-      'wsl-or' {
-        $domain = 'wsl'
-        $scriptWsl = ConvertTo-WslPath (Join-Path $StageDir $s.File)
-        $cmd = "source '$envWslWslPath' && /usr/local/bin/openroad -no_init -exit '$scriptWsl' > '$logWsl' 2>&1"
-        & wsl.exe -d Ubuntu-24.04 -- bash -c $cmd
-        $rc = $LASTEXITCODE
-      }
-      default { throw "unknown stage kind '$($s.Kind)'" }
-    }
-  } catch {
-    ($_ | Out-String) | Out-File -FilePath $logWsl -Append
-    $rc = 90
-  }
-  $t1 = Get-Date
-  Write-Host ("  exit={0}  elapsed={1:N1}s" -f $rc, ($t1 - $t0).TotalSeconds)
-  if (Test-Path $logWin) { Get-Content $logWin -Tail 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" } }
-
-  $stageResults += [ordered]@{
-    name = $name; description = $s.Desc; kind = $s.Kind; domain = $domain
-    executed = $true; skipped = $false; exit_code = $rc
-    started = $t0.ToUniversalTime().ToString('o'); ended = $t1.ToUniversalTime().ToString('o')
-    duration_s = [math]::Round(($t1 - $t0).TotalSeconds, 1)
+  $result = [ordered]@{
+    name = $name; description = $s.Desc; kind = $s.Kind; domain = ''
+    executed = $false; skipped = $false; exit_code = $null
+    started = ''; ended = ''; duration_s = 0
     log = $logWin; artifacts = @($s.Art); checks = @()
-    status = 'PENDING'
+    deps = @($s.Deps); required_checks = @($RequiredChecks[$name])
+    process_status = 'NOT_RUN'; engineering_status = 'NOT_TESTED'
+    qualification_status = 'NOT_QUALIFIED'; evidence_persisted = $false
+    status = 'NOT_TESTED'; block_reasons = @(); resume_reasons = @()
   }
 
-  # persist the execution status after every stage (crash-resume friendly)
-  $status.stages = @($stageResults | ForEach-Object {
-    [ordered]@{ name=$_.name; executed=$_.executed; exit_code=$_.exit_code
+  if ($blockedRemaining) {
+    $result.block_reasons += 'blocked by an earlier stage without authoritative acceptance'
+    $stageResults += $result
+    Write-Host ""
+    Write-Host "--------- stage $name : NOT RUN (downstream blocked)"
+    continue
+  }
+
+  # SR-02 step 1: dependencies must have fresh acceptance BEFORE this stage runs.
+  $pre = Test-StagePrereqs $name $doneMap
+  if (-not $pre.ok) {
+    $result.block_reasons += $pre.reasons
+    $stageResults += $result
+    Write-Host ""
+    Write-Host "--------- stage $name : BLOCKED (prerequisites not accepted)"
+    foreach ($r in $pre.reasons) { Write-Host "    $r" }
+    $blockedRemaining = $true
+    continue
+  }
+
+  # SR-02 step 2: resume is a revalidation decision, not a prior PASS lookup.
+  $skip = $false
+  if ($ValidateOnly) {
+    $skip = $true
+    $result.skipped = $true
+    $result.process_status = 'VALIDATION_ONLY'
+    Write-Host ""
+    Write-Host "--------- stage $name : VALIDATE ONLY (fresh checks, no execution)"
+  } elseif ($Resume) {
+    $rv = Test-StageResumeValid $name
+    if ($rv.ok) {
+      $skip = $true
+      $result.skipped = $true
+      $old = Get-LedgerEntry $name
+      $result.exit_code = $old.exit_code
+      $result.started = $old.started_utc; $result.ended = $old.finished_utc
+      $result.duration_s = $old.duration_s
+      $result.process_status = 'COMPLETED'
+      Write-Host ""
+      Write-Host "--------- stage $name : SKIPPED (resume; inputs/outputs/tools/config/deps revalidated)"
+    } else {
+      $result.resume_reasons = @($rv.reasons)
+      Write-Host ""
+      Write-Host "--------- stage $name : $($s.Desc) (resume rejected: $($rv.reasons -join '; '))"
+    }
+  } else {
+    Write-Host ""
+    Write-Host "--------- stage $name : $($s.Desc)"
+  }
+
+  # SR-02 step 3: process completion - deliberately separate from acceptance.
+  if (-not $skip) {
+    $t0 = Get-Date
+    $rc = 1
+    $domain = ''
+    try {
+      switch ($s.Kind) {
+        'win' {
+          $domain = 'windows'
+          foreach ($k in $EnvWin.Keys) { Set-Item -Path "Env:$k" -Value $EnvWin[$k] }
+          $ps1 = Join-Path $StageDir $s.File
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ps1
+          $rc = $LASTEXITCODE
+        }
+        'wsl-bash' {
+          $domain = 'wsl'
+          $scriptWsl = ConvertTo-WslPath (Join-Path $StageDir $s.File)
+          $cmd = "source '$envWslWslPath' && bash '$scriptWsl' > '$logWsl' 2>&1"
+          & wsl.exe -d Ubuntu-24.04 -- bash -c $cmd
+          $rc = $LASTEXITCODE
+        }
+        'wsl-or' {
+          $domain = 'wsl'
+          $scriptWsl = ConvertTo-WslPath (Join-Path $StageDir $s.File)
+          $cmd = "source '$envWslWslPath' && /usr/local/bin/openroad -no_init -exit '$scriptWsl' > '$logWsl' 2>&1"
+          & wsl.exe -d Ubuntu-24.04 -- bash -c $cmd
+          $rc = $LASTEXITCODE
+        }
+        default { throw "unknown stage kind '$($s.Kind)'" }
+      }
+    } catch {
+      ($_ | Out-String) | Out-File -FilePath $logWsl -Append
+      $rc = 90
+    }
+    $t1 = Get-Date
+    $result.executed = $true
+    $result.exit_code = $rc
+    $result.domain = $domain
+    $result.started = $t0.ToUniversalTime().ToString('o')
+    $result.ended = $t1.ToUniversalTime().ToString('o')
+    $result.duration_s = [math]::Round(($t1 - $t0).TotalSeconds, 1)
+    $result.process_status = if ($rc -eq 0) { 'COMPLETED' } else { 'FAILED' }
+    Write-Host ("  exit={0}  elapsed={1:N1}s" -f $rc, ($t1 - $t0).TotalSeconds)
+    if (Test-Path $logWin) { Get-Content $logWin -Tail 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" } }
+  }
+
+  # SR-02 step 4: FRESH independent acceptance for this stage, before any
+  # consumer stage is authorised.  The stage file is deleted first so a stale
+  # acceptance.json can never be mistaken for a fresh validation.
+  $stageAccJson = Join-Path $RunDir "acceptance_${name}.json"
+  $stageAccTxt = Join-Path $RunDir "acceptance_${name}.txt"
+  Remove-Item $stageAccJson -Force -ErrorAction SilentlyContinue
+  Remove-Item $stageAccTxt -Force -ErrorAction SilentlyContinue
+  $accCmd = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' --out '$runWsl/acceptance_${name}.json' > '$runWsl/acceptance_${name}.txt' 2>&1"
+  & wsl.exe -d Ubuntu-24.04 -- bash -c $accCmd
+  $stageAccRc = $LASTEXITCODE
+  if (Test-Path $stageAccTxt) { Get-Content $stageAccTxt | ForEach-Object { Write-Host "    $_" } }
+
+  $stageChecks = @()
+  $accEvidenceOk = $false
+  if (Test-Path $stageAccJson) {
+    try {
+      $parsed = Get-Content $stageAccJson -Raw | ConvertFrom-Json
+      $stageChecks = @($parsed.checks)
+      $accEvidenceOk = ($stageChecks.Count -gt 0)
+    } catch { $accEvidenceOk = $false }
+  }
+  if (-not $accEvidenceOk) {
+    $persistFailures += "stage ${name}: fresh acceptance evidence not persisted/readable (rc=$stageAccRc)"
+  }
+
+  # Engineering acceptance is computed from the required check statuses only;
+  # a zero tool exit code is never sufficient.
+  $byName = @{}
+  foreach ($c in $stageChecks) { if ($c.stage -eq $name) { $byName[$c.name] = $c } }
+  $fails = @(); $incon = @()
+  foreach ($rn in @($RequiredChecks[$name])) {
+    if (-not $byName.ContainsKey($rn)) { $incon += "missing:$rn" }
+    elseif ($byName[$rn].status -eq 'FAIL') { $fails += $rn }
+    elseif ($byName[$rn].status -ne 'PASS') { $incon += "${rn}:$($byName[$rn].status)" }
+  }
+  if ($fails.Count -gt 0) { $eng = 'FAIL' }
+  elseif ($incon.Count -gt 0 -or -not $accEvidenceOk) { $eng = 'INCONCLUSIVE' }
+  else { $eng = 'PASS' }
+  if ($result.process_status -eq 'FAILED') { $eng = 'FAIL' }
+  elseif ($result.process_status -eq 'NOT_RUN') { $eng = 'INCONCLUSIVE' }
+  $result.engineering_status = $eng
+  $result.status = $eng
+  $result.checks = @(@($RequiredChecks[$name]) | ForEach-Object {
+    if ($byName.ContainsKey($_)) { $byName[$_] }
+    else { [ordered]@{ name = $_; stage = $name; status = 'NOT_TESTED'; detail = 'required check not emitted' } }
+  })
+
+  # SR-02 step 5: persist the stage result and its provenance BEFORE authorising
+  # consumers.  Any persistence failure downgrades acceptance to INCONCLUSIVE.
+  $status.stages = @(($stageResults + @($result)) | ForEach-Object {
+    [ordered]@{ name=$_.name; executed=$_.executed; skipped=$_.skipped; exit_code=$_.exit_code
                 started=$_.started; ended=$_.ended; duration_s=$_.duration_s
+                process_status=$_.process_status; engineering_status=$_.engineering_status
                 status=$_.status }
   })
-  Write-Json $status $statusFile
+  $evOk = $true
+  try { Write-Json $status $statusTarget; if (-not (Test-Path $statusTarget)) { $evOk = $false } }
+  catch { $evOk = $false }
+  if (-not $accEvidenceOk) { $evOk = $false }
 
-  # --- manifest stage update (atomic, best-effort) -------------------------
-  if (Test-Path $ManifestMgr) {
+  if (-not $ValidateOnly -and (Test-Path $ManifestMgr)) {
     try {
       $outArts = @()
       foreach ($a in @($s.Art)) {
@@ -527,84 +848,88 @@ foreach ($name in $order) {
       if (Test-Path $logWin) {
         $logArts += [ordered]@{ path = $logWin; required = $false; exists = $true; sha256 = (Get-Sha256 $logWin); size = (Get-Item $logWin).Length }
       }
-      $stageStatus = if ($rc -eq 0) { 'PASS' } else { 'FAIL' }
+      $stageStatus = if ($eng -eq 'PASS' -and $result.process_status -eq 'COMPLETED') { 'PASS' } else { 'FAIL' }
       $srRec = [ordered]@{
         stage_id = $name; stage = $name; run_id = $RunId
         stage_status = $stageStatus; status = $stageStatus
-        stage_exit_code = $rc; exit_code = $rc
-        start_timestamp = $t0.ToUniversalTime().ToString('o'); started_utc = $t0.ToUniversalTime().ToString('o')
-        end_timestamp = $t1.ToUniversalTime().ToString('o'); finished_utc = $t1.ToUniversalTime().ToString('o')
+        stage_exit_code = $result.exit_code; exit_code = $result.exit_code
+        start_timestamp = $result.started; started_utc = $result.started
+        end_timestamp = $result.ended; finished_utc = $result.ended
         tool_versions = $report.tools
         input_artifacts = @(); output_artifacts = $outArts; logs = $logArts
-        evidence_class = 'FRESH_EXECUTION'
+        evidence_class = if ($skip) { 'REVALIDATED_RESUME' } else { 'FRESH_EXECUTION' }
+        engineering_acceptance = $eng; qualification_status = 'PENDING'
       }
       $srTmp = Join-Path $RunDir "._manifest_${name}.json"
       Write-Json $srRec $srTmp
       $mu = Invoke-Manifest @('upsert-stage', $RunDir, '--stage-json-file', $srTmp)
       Remove-Item $srTmp -Force -ErrorAction SilentlyContinue
-      if ($mu) { Write-Host "  manifest update rc=$($mu.rc)" }
+      if ($null -eq $mu -or $mu.rc -ne 0) { $evOk = $false }
+      Write-Host "  manifest update rc=$($mu.rc)"
     } catch {
+      $evOk = $false
       Write-Host "  manifest update error: $($_.Exception.Message)"
     }
   }
 
-  if ($rc -ne 0) {
-    Write-Host "  stage FAILED (exit $rc) - remaining stages are skipped"
-    break
+  $entry = [ordered]@{
+    name = $name; qualification = 'PENDING'; process_status = $result.process_status
+    engineering_status = $eng; evidence_persisted = $false
+    exit_code = $result.exit_code; started_utc = $result.started; finished_utc = $result.ended
+    duration_s = $result.duration_s; script_hash = $CurrentScriptHashes[$name]
+    context_rtl = $CurrentContext.RTL; context_sdc = $CurrentContext.SDC
+    context_lib = $CurrentContext.LIB; context_pdk = $CurrentContext.PDK
+    context_deck = $CurrentContext.DECK; context_pdn = $CurrentContext.PDN
+    context_tools = $CurrentContext.TOOLS; context_config = $CurrentContext.CONFIG
+    artifacts = @(); required_checks = @($RequiredChecks[$name])
+    checks = @($result.checks | ForEach-Object { [ordered]@{ name=$_.name; status=$_.status } })
   }
-}
+  foreach ($a in @($s.Art)) {
+    $p = Join-Path $RunDir $a
+    $entry.artifacts += [ordered]@{ path = $a; sha256 = (Get-Sha256 $p) }
+  }
+  if (-not $ValidateOnly) {
+    $ledger.stages[$name] = $entry
+    if (-not (Save-Ledger $ledger)) { $evOk = $false }
+  }
 
-# --------------------------------------------------------------------------- manifest finalize (pre-acceptance)
-if (Test-Path $ManifestMgr) {
-  $preOverall = 'PARTIAL'
-  $mf = Invoke-Manifest @('finalize', $RunDir, '--run-status', $preOverall)
-  if ($mf) { Write-Host "  manifest finalize(pre) rc=$($mf.rc)" }
-}
+  if (-not $evOk) {
+    $persistFailures += "stage ${name}: evidence/provenance persistence failure"
+    if ($eng -eq 'PASS') { $eng = 'INCONCLUSIVE' }
+    $result.engineering_status = $eng; $result.status = $eng
+    $entry.engineering_status = $eng
+  }
+  $result.evidence_persisted = $evOk
+  $entry.evidence_persisted = $evOk
 
-# --------------------------------------------------------------------------- acceptance checks
-$accJson = Join-Path $RunDir 'acceptance.json'
-$accTxt = Join-Path $RunDir 'acceptance.txt'
-$accRc = 0
-if (-not $ValidateOnly) {
-  Write-Host ""
-  Write-Host "--------- independent acceptance checks"
-  $accCmd = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' > '$runWsl/acceptance.txt' 2>&1"
-  & wsl.exe -d Ubuntu-24.04 -- bash -c $accCmd
-  $accRc = $LASTEXITCODE
-  if (Test-Path $accTxt) { Get-Content $accTxt | ForEach-Object { Write-Host "    $_" } }
-  Write-Host "  acceptance exit=$accRc"
-} else {
-  # validate-only: still run acceptance/manifest validation if desired
-  $accRc = 0
-}
-
-# --------------------------------------------------------------------------- merge results
-$accResults = @()
-if (Test-Path $accJson) {
-  try { $accResults = (Get-Content $accJson -Raw | ConvertFrom-Json).checks } catch { $accResults = @() }
-}
-$byStage = @{}
-foreach ($c in $accResults) {
-  if (-not $byStage.ContainsKey($c.stage)) { $byStage[$c.stage] = @() }
-  $byStage[$c.stage] += $c
-}
-
-foreach ($sr in $stageResults) {
-  $checks = @()
-  if ($byStage.ContainsKey($sr.name)) { $checks = @($byStage[$sr.name]) }
-  $failed  = @($checks | Where-Object { $_.status -eq 'FAIL' })
-  $pending = @($checks | Where-Object { $_.status -eq 'NOT_TESTED' })
-  if ($checks.Count -eq 0) {
-    $sr.status = 'INCONCLUSIVE'
-  } elseif ($failed.Count -gt 0) {
-    $sr.status = 'FAIL'
-  } elseif ($pending.Count -gt 0) {
-    $sr.status = 'INCONCLUSIVE'
+  if ($ValidateOnly) {
+    $q = if ($eng -eq 'PASS' -and $evOk) { 'VALIDATION_PASS' } else { 'NOT_QUALIFIED' }
+  } elseif ($eng -eq 'PASS' -and $result.process_status -eq 'COMPLETED' -and $evOk) {
+    $q = 'QUALIFIED_PASS'
   } else {
-    $sr.status = 'PASS'
+    $q = 'NOT_QUALIFIED'
   }
-  $sr['checks'] = $checks
+  $result.qualification_status = $q
+  $entry.qualification = $q
+  if (-not $ValidateOnly) {
+    $ledger.stages[$name] = $entry
+    if (-not (Save-Ledger $ledger)) {
+      $evOk = $false; $result.evidence_persisted = $false
+      $result.qualification_status = 'NOT_QUALIFIED'
+      $persistFailures += "stage ${name}: gate ledger write failure"
+    }
+  }
+  $stageResults += $result
+  $doneMap[$name] = $result
+  Write-Host "  process=$($result.process_status)  engineering=$eng  qualification=$($result.qualification_status)  evidence_persisted=$($result.evidence_persisted)"
+
+  # SR-02 step 6: only an accepted stage authorises its consumers.
+  if ($result.qualification_status -notin @('QUALIFIED_PASS','VALIDATION_PASS')) {
+    Write-Host "  stage $name NOT accepted - all dependent stages are blocked"
+    $blockedRemaining = $true
+  }
 }
+
 $report.stages = $stageResults
 
 # --------------------------------------------------------------------------- artifact manifest
@@ -615,17 +940,41 @@ foreach ($s in $StageTable) {
     $manifest[$a] = [ordered]@{ path = $p; exists = (Test-Path $p); sha256 = (Get-Sha256 $p); bytes = $(if (Test-Path $p) { (Get-Item $p).Length } else { 0 }) }
   }
 }
-foreach ($extra in @('report.json','acceptance.json','stage_status.json','env_wsl.env','env_win.env')) {
+$extraFiles = @('report.json','acceptance.json','stage_status.json','validation_status.json','gate_ledger.json','env_wsl.env','env_win.env')
+foreach ($n in $order) { $extraFiles += "acceptance_${n}.json" }
+foreach ($extra in $extraFiles) {
   $p = Join-Path $RunDir $extra
   $manifest[$extra] = [ordered]@{ path = $p; exists = (Test-Path $p); sha256 = (Get-Sha256 $p); bytes = $(if (Test-Path $p) { (Get-Item $p).Length } else { 0 }) }
 }
 $report.artifacts = $manifest
 
-# --------------------------------------------------------------------------- overall verdict
-$executed = @($stageResults | Where-Object { $_.executed } | ForEach-Object { $_.name })
-$missing = @($Mandatory | Where-Object { $executed -notcontains $_ })
-$notPass = @($stageResults | Where-Object { $_.status -ne 'PASS' })
+# --------------------------------------------------------------------------- final fresh full acceptance
+# A fresh global acceptance run is the authoritative evidence snapshot.  It is
+# produced even in ValidateOnly mode (the previous code skipped it entirely).
+$accCmdFull = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' > '$runWsl/acceptance.txt' 2>&1"
+& wsl.exe -d Ubuntu-24.04 -- bash -c $accCmdFull
+$fullAccRc = $LASTEXITCODE
+if (-not (Test-Path $accJson)) { $persistFailures += 'final acceptance.json not persisted' }
+
+# --------------------------------------------------------------------------- manifest finalize (status must be truthful)
+$allQualified = ($stageResults.Count -eq $Mandatory.Count) -and
+                @($stageResults | Where-Object { $_.qualification_status -ne 'QUALIFIED_PASS' }).Count -eq 0
+if (-not $ValidateOnly -and (Test-Path $ManifestMgr)) {
+  $finalStatus = if ($allQualified) { 'PASS' } else { 'PARTIAL' }
+  $mf = Invoke-Manifest @('finalize', $RunDir, '--run-status', $finalStatus)
+  if ($mf) {
+    Write-Host "  manifest finalize rc=$($mf.rc)"
+    if ($mf.rc -ne 0) { $persistFailures += 'manifest finalize returned non-zero' }
+  } else { $persistFailures += 'manifest finalize did not run' }
+}
+
+# --------------------------------------------------------------------------- overall verdict (three distinct fields)
+$qualified = @($stageResults | Where-Object { $_.qualification_status -in @('QUALIFIED_PASS','VALIDATION_PASS') } | ForEach-Object { $_.name })
+$missing = @($Mandatory | Where-Object { $qualified -notcontains $_ })
+$notPass = @($stageResults | Where-Object { $_.engineering_status -ne 'PASS' })
+$anyFail = @($stageResults | Where-Object { $_.engineering_status -eq 'FAIL' })
 $report.not_executed = $missing
+$report.evidence_persistence_failures = $persistFailures
 
 $failMsgs = @()
 foreach ($sr in $stageResults) {
@@ -633,49 +982,79 @@ foreach ($sr in $stageResults) {
     if ($c.status -ne 'PASS') { $failMsgs += "$($sr.name)/$($c.name): $($c.status) - $($c.detail)" }
   }
   if ($sr.exit_code -ne 0) { $failMsgs += "$($sr.name): stage exit code $($sr.exit_code)" }
+  foreach ($r in @($sr.block_reasons)) { $failMsgs += "$($sr.name): BLOCKED - $r" }
 }
+foreach ($p in $persistFailures) { $failMsgs += "evidence persistence: $p" }
 $report.failure_messages = $failMsgs
 
-if ($missing.Count -gt 0) {
-  $report.overall = 'INCONCLUSIVE'
-} elseif ($notPass.Count -gt 0) {
-  $report.overall = 'FAIL'
+$clean = ($missing.Count -eq 0 -and $notPass.Count -eq 0 -and $persistFailures.Count -eq 0 -and $fullAccRc -eq 0)
+if ($ValidateOnly) {
+  $report.process_completion = 'NOT_RUN_VALIDATION_ONLY'
+} elseif ($missing.Count -gt 0) {
+  $report.process_completion = 'INCOMPLETE'
 } else {
-  $report.overall = 'PASS'
+  $report.process_completion = 'COMPLETE'
+}
+if ($anyFail.Count -gt 0) { $report.engineering_acceptance = 'FAIL' }
+elseif ($notPass.Count -gt 0) { $report.engineering_acceptance = 'INCONCLUSIVE' }
+else { $report.engineering_acceptance = 'PASS' }
+
+if ($clean) {
+  $report.qualification = if ($ValidateOnly) { 'VALIDATION_PASS' } else { 'QUALIFIED_PASS' }
+  $report.overall = if ($ValidateOnly) { 'VALIDATION_PASS' } else { 'PASS' }
+} else {
+  $report.qualification = 'NOT_QUALIFIED'
+  $report.overall = if ($missing.Count -gt 0) { 'INCONCLUSIVE' } else { 'FAIL' }
 }
 $report.finished_utc = (Get-Date).ToUniversalTime().ToString('o')
 
 # persist the final per-stage status
 $status.stages = @($stageResults | ForEach-Object {
-  [ordered]@{ name=$_.name; executed=$_.executed; exit_code=$_.exit_code
+  [ordered]@{ name=$_.name; executed=$_.executed; skipped=$_.skipped; exit_code=$_.exit_code
               started=$_.started; ended=$_.ended; duration_s=$_.duration_s
+              process_status=$_.process_status; engineering_status=$_.engineering_status
+              qualification_status=$_.qualification_status; evidence_persisted=$_.evidence_persisted
               status=$_.status }
 })
-Write-Json $status $statusFile
+Write-Json $status $statusTarget
 
 Write-Json $report (Join-Path $RunDir 'report.json')
 Copy-Item (Join-Path $RunDir 'report.json') (Join-Path $EvidenceDir "report_$RunId.json") -Force
 if (Test-Path $accTxt) { Copy-Item $accTxt (Join-Path $EvidenceDir "acceptance_$RunId.txt") -Force }
 Copy-Item (Join-Path $RunDir 'acceptance.json') (Join-Path $EvidenceDir "acceptance_$RunId.json") -Force -ErrorAction SilentlyContinue
+Copy-Item $statusTarget (Join-Path $EvidenceDir "stage_status_$RunId.json") -Force -ErrorAction SilentlyContinue
+Copy-Item $LedgerPath (Join-Path $EvidenceDir "gate_ledger_$RunId.json") -Force -ErrorAction SilentlyContinue
 
 # --------------------------------------------------------------------------- markdown summary
 $md = @()
 $md += "# Phase 14 regression run $RunId"
 $md += ''
 $md += "- overall: **$($report.overall)**"
+$md += "- process completion: **$($report.process_completion)**"
+$md += "- engineering acceptance: **$($report.engineering_acceptance)**"
+$md += "- qualification: **$($report.qualification)**"
 $md += "- run dir: ``$RunDir``"
 $md += "- git: ``$($report.git_branch)`` @ ``$($report.git_head)``"
 $md += "- started: $($report.timestamp_utc)"
 $md += "- finished: $($report.finished_utc)"
 $md += ''
-$md += '| # | Stage | Status | Exit | Checks | Duration |'
-$md += '|---:|---|---|---:|---|---:|'
+$md += '| # | Stage | Process | Engineering | Qualification | Exit | Checks | Duration |'
+$md += '|---:|---|---|---|---|---:|---|---:|'
 $i = 0
 foreach ($sr in $stageResults) {
   $i++
   $ck = @($sr.checks)
-  $md += "| $i | $($sr.name) | $($sr.status) | $($sr.exit_code) | $($ck.Count) checks, $(@($ck | Where-Object { $_.status -ne 'PASS' }).Count) not passing | $($sr.duration_s)s |"
+  $md += "| $i | $($sr.name) | $($sr.process_status) | $($sr.engineering_status) | $($sr.qualification_status) | $($sr.exit_code) | $($ck.Count) checks, $(@($ck | Where-Object { $_.status -ne 'PASS' }).Count) not passing | $($sr.duration_s)s |"
 }
+$md += ''
+$md += '## Gate decisions (SR-02)'
+$gateAny = $false
+foreach ($sr in $stageResults) {
+  foreach ($r in @($sr.block_reasons)) { $gateAny = $true; $md += "- ``$($sr.name)`` BLOCKED: $r" }
+  foreach ($r in @($sr.resume_reasons)) { $gateAny = $true; $md += "- ``$($sr.name)`` resume revalidation rejected: $r" }
+}
+foreach ($p in $persistFailures) { $gateAny = $true; $md += "- evidence persistence: $p" }
+if (-not $gateAny) { $md += '- none' }
 $md += ''
 $md += '## Checks not passing'
 $anyFail = $false
@@ -703,8 +1082,9 @@ Copy-Item (Join-Path $RunDir 'summary.md') (Join-Path $EvidenceDir "summary_$Run
 Write-Host ""
 Write-Host "==========================================================="
 Write-Host " OVERALL: $($report.overall)"
+Write-Host " process=$($report.process_completion)  engineering=$($report.engineering_acceptance)  qualification=$($report.qualification)"
 Write-Host " report : $(Join-Path $RunDir 'report.json')"
 Write-Host " summary: $(Join-Path $RunDir 'summary.md')"
 Write-Host "==========================================================="
-if ($report.overall -ne 'PASS') { exit 1 }
+if ($report.overall -notin @('PASS','VALIDATION_PASS')) { exit 1 }
 exit 0

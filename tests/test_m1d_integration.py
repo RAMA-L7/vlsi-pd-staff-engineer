@@ -18,11 +18,22 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 
 PROMOTED_RTL_SHA = "2a7e028dacd97b4462d791e69e69b8ff1b2cffcf239ba31b6e968efdadb8c4be"
-CANONICAL_SDC_SHA = "2a9126e716f834f255fe358aa8962ae619ffec50418e1104690a49eda47be644"
+CONFIG_PATH = REPO / "regression" / "configs" / "soc_ctrl_10ns.json"
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _approved_sdc_sha256() -> str:
+    """Expected SDC hash derived from the CURRENT promoted SDC file.
+
+    The approved config pins the SHA-256 of the exact on-disk SDC bytes.  We
+    derive it here instead of hard-coding a literal so an approved SDC change
+    (e.g. the SR-07 clk input-delay warning fix) flows through automatically;
+    the config pin is still asserted to match these bytes exactly.
+    """
+    return _sha256(REPO / "examples" / "soc_ctrl" / "rtl" / "soc_ctrl.sdc")
 
 
 def test_promoted_soc_ctrl_inputs_present_and_hash_bound():
@@ -30,7 +41,21 @@ def test_promoted_soc_ctrl_inputs_present_and_hash_bound():
     sdc = REPO / "examples" / "soc_ctrl" / "rtl" / "soc_ctrl.sdc"
     assert rtl.is_file() and sdc.is_file()
     assert _sha256(rtl) == PROMOTED_RTL_SHA
-    assert _sha256(sdc) == CANONICAL_SDC_SHA
+
+    # SDC provenance: derive the expected hash from the CURRENT promoted SDC
+    # bytes instead of a stale literal, then assert the approved 10 ns config
+    # pins exactly those bytes.  This is the provenance check: a config pin
+    # that drifts from the live SDC (or vice versa) fails.
+    expected_sdc_sha = _sha256(sdc)
+    cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8", errors="replace"))
+    assert cfg["constraints"]["sdc_sha256"] == expected_sdc_sha, (
+        "config constraints.sdc_sha256 does not pin the current promoted SDC: "
+        f"config={cfg['constraints']['sdc_sha256']} sdc={expected_sdc_sha}"
+    )
+    # The approved SDC is still the authoritative 10 ns constraint source.
+    sdc_text = sdc.read_text(encoding="utf-8", errors="replace")
+    assert re.search(r"create_clock\b.*-period\s+10\.0", sdc_text)
+
     # Approved arithmetic correction must be present in the promoted RTL.
     text = rtl.read_text(encoding="utf-8", errors="replace")
     for bit in range(4):
@@ -45,13 +70,18 @@ def test_synthesis_stage_applies_dont_use():
 
 
 def test_ten_ns_reference_config_is_present_and_approved():
-    cfg_path = REPO / "regression" / "configs" / "soc_ctrl_10ns.json"
-    assert cfg_path.is_file()
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8", errors="replace"))
+    assert CONFIG_PATH.is_file()
+    cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8", errors="replace"))
     assert cfg.get("clock", {}).get("period_ns") == 10.0 or cfg.get("period_ns") == 10.0
     assert cfg.get("top_module") == "soc_ctrl"
     blob = json.dumps(cfg)
-    assert "2a9126e7" in blob
+    # Derive the expected SDC hash from the current promoted SDC and require
+    # the approved config to pin it (explicit provenance cross-check, no stale
+    # literal).  Both the constraints pin and the authority statement must
+    # agree with the live SDC bytes.
+    expected_sdc_sha = _approved_sdc_sha256()
+    assert cfg["constraints"]["sdc_sha256"] == expected_sdc_sha
+    assert expected_sdc_sha in blob
     assert "NOT approved" in blob or "not approved" in blob
 
 

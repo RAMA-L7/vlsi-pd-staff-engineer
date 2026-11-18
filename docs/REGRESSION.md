@@ -1,6 +1,60 @@
 # Regression Documentation — VLSI Physical Design Framework
 
-## feature/F-01-claude-agent-discovery — Multi-Design v2.0
+## main — Multi-Design v2.0
+
+### Authoritative status and commands (SR-08 / SR-10)
+
+This checkout is commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b` (tree
+`ab0bcf96d00e99a1b1a6cd46f41fde159661791b`). The single current qualification
+matrix is in `README.md` ("Authoritative qualification matrix — this checkout");
+all dated results below are historical context. Recorded baseline runs:
+`baseline_20261116` and `baseline_20261116_r2` (16/16 stages, 95/95 checks) on
+the published implementation at commit `6c4a264`; soc_ctrl full physical run
+`run_pub_m1d_soc_ctrl_full` (retained SS-timing and LVS-gate failures). No fresh
+15-stage run was performed against `0a9eb57` in this documentation pass.
+
+**Portable config source of truth (WORKSTREAM 2):** `assistant/pins.json` →
+`portable_config` resolves absent developer-host defaults (validated fallback:
+ORFS HEAD `25b6429c…`, host-specific, not a portability claim) and pins exact
+SHA-256 hashes for platform collateral with `required` flags. Environment
+overrides win; the baseline wrapper injects the resolved overrides into the
+runner, and preflight reports every collateral file's resolved source and
+hash under `platform_config` / `dependencies.platform`. A missing required
+file or hash mismatch is a FAIL; an optional absence is reported only. See
+`docs/SETUP.md` §3A.
+
+**Preflight command (exact missing dependencies):**
+
+```powershell
+& D:\tools\venv\Scripts\python.exe regression\checks\stage00_preflight.py `
+    regression\project_config.template.json --out-dir <isolated-dir> `
+    --require-tool yosys --require-tool openroad --require-tool eqy
+# Exit 0=PASS, 1=FAIL, 2=usage. Writes stage00_result.json/stage00_report.txt.
+```
+
+The report includes a `dependencies` block listing each mandatory/optional
+tool, the exact executable/path searched, the override variable that can supply
+it, and `missing_mandatory` / `missing_optional` arrays. The Microsoft Store
+`python.exe` alias is rejected as a false PASS; `--require-tool NAME` promotes
+an optional tool to mandatory for CI. Workspace isolation now genuinely fails
+when the output directory overlaps an RTL/SDC source directory, and the
+undriven-output heuristic no longer has an `or True` no-op.
+
+**One documented baseline command:**
+
+```powershell
+& D:\tools\venv\Scripts\python.exe -m assistant baseline --design test_counter --run-id <ID>
+# soc_ctrl: replace --design test_counter with --design soc_ctrl
+# --clean       re-create the isolated output dir (safe reuse of a run id)
+# --no-isolate  legacy shared output dir under --out
+# --dry-run     provenance only; never returns success (exit 1)
+# The CLI `python -m assistant baseline --design ...` forwards --design to the
+# same implementation and propagates 0/1/124/125 unchanged (SR-06 contract).
+```
+
+Each invocation writes `baseline_<design>_<run-id>/baseline_manifest.json` and
+its log under `<--out>` (default `<repo>/regression/evidence/`); the regression
+workspace remains isolated per RunId under `regression/workspace/run_<RunId>/`.
 
 ### run_regression.ps1 — Primary Entry Point
 
@@ -72,17 +126,16 @@ $Top = $env:REG_DESIGN
 
 ### soc_ctrl Configuration
 
-- **RTL**: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` ABSENT from published tree (untracked in preserved tree only)
-- **SDC**: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` ABSENT from published tree (untracked in preserved tree only)
+- **RTL**: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` **tracked at reviewed commit `0a9eb57`** (absent only from the earlier `27b5d1c` snapshot)
+- **SDC**: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` **tracked at `0a9eb57`**; approved 10 ns bytes pinned by `regression/configs/soc_ctrl_10ns.json` and by `assistant/pins.json:design_inputs.soc_ctrl_sdc` (`ab66de1e…`)
 - **Top Module**: `soc_ctrl`
 - **Artifact Prefix**: `soc_ctrl`
 - **Expected Output**: `soc_ctrl_synth.v`, `soc_ctrl_lec_generic.log`, etc.
-- **Framework Integration**: `-Design soc_ctrl` parameter operational; stage scripts configured; full regression not executed in this pass (the documented baseline command works for `test_counter`; historically reported shell blocker no longer applies)
+- **Framework Integration**: `-Design soc_ctrl` parameter operational; stage scripts configured; the Milestone 1D run `run_pub_m1d_soc_ctrl_full` executed all stages with retained failures (SS setup WNS −2.3378 ns; stage-15 comparator gate FAIL). No fresh run was performed against `0a9eb57` in this documentation pass.
 - **Known Limitations**:
-  - Original soc_ctrl reference is gate-level netlist, not RTL
-  - Framework created RTL representation for flow compatibility
-  - Full regression not executed in this pass for soc_ctrl (baseline design was test_counter)
-  - Do NOT claim DRC, LVS, or timing signoff for soc_ctrl
+  - Original soc_ctrl reference is a gate-level netlist, not RTL; the framework RTL is an adaptation
+  - DRC was executed (0 actual violations) but is an academic deck check, not signoff; LVS gate FAILED as-run; SS timing is not closed
+  - Do NOT claim DRC/LVS/timing signoff or full physical qualification for soc_ctrl
 
 ### Stage Execution
 
@@ -261,7 +314,7 @@ interactive_openroad_exec placement.tcl
 
 **Purpose**: Clock tree synthesis, skew balancing, useful skew
 
-**Important**: CTS must be performed BEFORE the PDN (with the platform order, PDN first, clock-tree buffers are inserted after `global_connect`, so their power pins stay on no net and the reference netlist contains `__UNCONNECTED__` nets).
+**Important**: CTS is performed BEFORE the PDN in this flow; with the platform default order (PDN first) clock-tree buffers would be inserted after `global_connect`, leaving their power pins unconnected - hence the enforced CTS-to-PDN order and the reference netlist contains `__UNCONNECTED__` nets).
 
 **Command** (OpenROAD via WSL or MCP):
 
@@ -730,9 +783,12 @@ JSON reports with `schema_version`, per-stage status, per-check results, artifac
         "rtl_elaboration": "PASS",
         "technology_mapping": "PASS",
         "area": "PASS",
-        "wns_tt": "5.4550",
-        "wns_ss": "2.6745",
-        "wns_ff": "-0.6159",
+        "setup_wns_tt": "5.4550",
+        "setup_wns_ss": "2.6745",
+        "setup_wns_ff": "5.7003",
+        "hold_wns_tt": "0.6159",
+        "hold_wns_ss": "1.2335",
+        "hold_wns_ff": "0.3917",
         "tns": "0.0000"
       },
       "artifacts": {
@@ -754,6 +810,12 @@ JSON reports with `schema_version`, per-stage status, per-check results, artifac
   }
 }
 ```
+
+**Timing sign convention (SR-10):** setup and hold WNS are reported separately
+and are non-negative for a zero-violator PASS. The older `wns_ff: -0.6159`
+value was a sign/field transcription error (`0.6159` is TT hold slack); the
+recorded FF setup WNS is `+5.7003` ns with FF hold `+0.3917` ns
+(`D:\audit\second_review_evidence_20261118\repro\06_reproducibility_r1_vs_r2.json`).
 
 ### Artifact Organization
 
@@ -784,7 +846,7 @@ workspace/run_<run_id>/
 
 Seven negative tests (N1–N7) inject faults/deficiencies into the regression flow to verify that each is independently detected.
 
-**Test Results (Phase 15, final execution)**:
+**Test Results (Phase 15, 2026-11-14; historical)**:
 
 | Test | Injection | Verdict | Notes |
 |---|---|---|---|
@@ -822,7 +884,7 @@ Seven negative tests (N1–N7) inject faults/deficiencies into the regression fl
 
 ### Reproducibility
 
-**Phase 14 Baseline**: REPRODUCIBLE — two independent runs (A & B) both OVERALL PASS with 88/88 acceptance checks (Phase 14 historical; current baseline 95/95) across all stages; all 20 compared artefacts are bit-identical; GDSII geometry identical after timestamp stripping.
+**Phase 14 Baseline (2026-11-12; historical)**: REPRODUCIBLE — two independent runs (A & B) both OVERALL PASS with 88/88 acceptance checks (historical; 2026-11-16 baseline runs `baseline_20261116` / `_r2` recorded 95/95) across all stages; all 20 compared artefacts are bit-identical; GDSII geometry identical after timestamp stripping.
 
 **Reproducibility Verification**:
 - Run A and Run B both produce OVERALL PASS
@@ -852,7 +914,7 @@ Seven negative tests (N1–N7) inject faults/deficiencies into the regression fl
 
 **Historical status (Phase 14–17A)**: the Code Mode shell issue returned exit code 1 with no output; at that time all 15 stages were reported blocked for live execution from the Code Mode environment.
 
-**Current status (2026-11-16)**: the documented baseline command (`python -m assistant baseline`) executes all 16 stages PASS (92 checks) on test_counter; live LEC/STA gates pass. soc_ctrl was simply not executed in this pass.
+**Current status (2026-11-16)**: the documented baseline command (`python -m assistant baseline`) executes all 16 stages PASS (95 checks: 92 stage + 3 manifest) on test_counter; live LEC/STA gates pass. soc_ctrl was simply not executed in this pass.
 
 **Workaround (historical)**: Phase 17B work was completed via `read`/`write`/`edit` tools; evidence preserved and framework configuration verified via file inspection.
 
@@ -860,7 +922,7 @@ Seven negative tests (N1–N7) inject faults/deficiencies into the regression fl
 - `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter` → verify REPRODUCIBLE
 - `powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl` → verify all 15 stages
 - Git commit and push to remote
-- Verify remote publication
+- Verify `origin/main` after authorized publication (see PUBLICATION_REPORT.md)
 
 ### Command Examples
 
@@ -894,14 +956,14 @@ $Resume = $true  # Skip completed stages; only run remaining
 - Framework limitations documented
 
 **Executed (live verification)**:
-- Full baseline regression on test_counter via `python -m assistant baseline`: 16/16 stages PASS, 92 checks, byte-identical netlists, reproduced twice (Phase 14 baseline plus 2026-11-16 validation)
+- Full baseline regression on test_counter via `python -m assistant baseline`: 16/16 stages PASS, 95 checks (92 stage + 3 manifest), byte-identical netlists, reproduced twice (Phase 14 baseline plus 2026-11-16 validation)
 - Live LEC (positive + negative control) and STA ran-vs-meets gates — PASS
 - DRC, LVS, multi-corner STA and GDSII — executed as stages of the documented baseline (test_counter only)
 
 **Not executed in this pass**:
 - soc_ctrl full regression (framework configured; baseline design was test_counter)
 - soc_ctrl DRC/LVS/STA/GDSII (no results claimed)
-- New remote publication in this validation pass (implementation published at 6c4a264 on origin/main)
+- New remote publication in this validation pass (implementation historical published ancestor 6c4a264; current origin/main is 0a9eb57)
 
 **Clear Distinction**:
 - Configured: Framework supported, scripts in place
@@ -909,5 +971,5 @@ $Resume = $true  # Skip completed stages; only run remaining
 
 ---
 
-*Regression Documentation — feature/F-01-claude-agent-discovery — Multi-Design v2.0*
+*Regression Documentation — main — Multi-Design v2.0*
 *Generated: 2026-11-14 — All stage scripts, acceptance criteria, and evidence procedures verified via read-only file inspection*

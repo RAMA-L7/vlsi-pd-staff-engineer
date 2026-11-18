@@ -24,14 +24,34 @@ from .statuses import Status
 # Parsers (deterministic)
 # ---------------------------------------------------------------------------
 
-# OpenSTA / OpenROAD worst-slack markers used by regression/stages/12_sta.sh
-WNS_RE = re.compile(r"(?:worst_slack|WNS)\s*[:=]\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
-TNS_RE = re.compile(r"(?:tns|TNS)\s*[:=]\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
-SLACK_RE = re.compile(r"\bslack\s*\((?:MET|VIOLATED)\)\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+# OpenSTA / OpenROAD worst-slack markers.  Real 12_sta.sh reports emit
+# "setup_wns <num>" / "hold_wns <num>" (via `puts`) and "<num> slack (MET)"
+# (via report_checks).  Legacy reports used "worst_slack: <num>" and
+# "slack (MET) <num>".  Both spellings are accepted (SR-07 U3).
+WNS_RE = re.compile(
+    r"\b(?:worst_slack|setup_wns|hold_wns|wns)\b\s*[:=]?\s*(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+TNS_RE = re.compile(
+    r"\b(?:total_negative_slack|setup_tns|hold_tns|tns)\b\s*[:=]?\s*(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+SLACK_RE = re.compile(
+    r"(?:(-?\d+(?:\.\d+)?)\s+slack\s*\((?:MET|VIOLATED)\)"
+    r"|slack\s*\((?:MET|VIOLATED)\)\s+(-?\d+(?:\.\d+)?))",
+    re.IGNORECASE,
+)
 CLOCK_RE = re.compile(r"\bcreate_clock\b|\bcreate_generated_clock\b", re.IGNORECASE)
+# OpenSTA `check_setup` (its check_timing equivalent) output plus explicit
+# markers emitted by 12_sta.sh.  Any constraint-sanity warning is a structural
+# rejection, never a PASS.
 UNCONSTRAINED_RE = re.compile(
-    r"unconstrained|no paths found|is not a valid startpoint|"
-    r"warning:.*no clock|unmapped|cannot find port",
+    r"\bwarning\s*:|unconstrained|not constrained|no paths found|"
+    r"missing\s+set_(?:input|output)_delay|(?:input|output) ports? missing|"
+    r"is not a valid startpoint|has no clock|no\s+(?:related\s+)?clock|"
+    r"missing clock|not clocked|unmapped|cannot find port|"
+    r"check_timing_verdict:\s*unconstrained|"
+    r"check_timing_verdict:\s*probe_failed",
     re.IGNORECASE,
 )
 UNRESOLVED_RE = re.compile(
@@ -93,9 +113,10 @@ def parse_sta_report(text: str) -> ParsedSlack:
         p.errors.append("TNS marker present but no numeric value follows")
 
     for m in SLACK_RE.finditer(text):
+        value = m.group(1) if m.group(1) is not None else m.group(2)
         try:
-            p.path_slacks.append(float(m.group(1)))
-        except ValueError:
+            p.path_slacks.append(float(value))
+        except (TypeError, ValueError):
             p.malformed = True
 
     p.has_clock = bool(CLOCK_RE.search(text)) or bool(
@@ -141,10 +162,11 @@ def sta_verdict(
     if expect_paths and not p.path_slacks and p.wns is None:
         reasons.append("expected timing paths but none reported")
 
-    unconstrained = [h for h in p.unconstrained_hits if "unconstrained" in h.lower()
-                     or "no paths" in h.lower()]
-    if unconstrained:
-        reasons.append("unconstrained-path indicators: " + ", ".join(unconstrained[:3]))
+    # Any unconstrained-path indicator is a structural rejection.  In
+    # particular it must never fall through to the "worst slack meets target"
+    # branch and yield PASS (SR-07 U3).
+    if p.unconstrained_hits:
+        reasons.append("unconstrained-path indicators: " + ", ".join(p.unconstrained_hits[:3]))
 
     if reasons:
         status = Status.FAIL.value

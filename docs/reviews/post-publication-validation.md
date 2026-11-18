@@ -41,7 +41,7 @@ git -C … show -s --format='%H%n%P%n%T' HEAD
   → parent e04692f2745b37de7d9b582e232764a0cf6c9c08
   → tree   a6f6bdf9271d26ff08f24e0ecfb2227b3ef79cbb
 git -C … log -1 --format=fuller
-  → RAMA-L7 <ramasketha14093@gmail.com>, Mon Nov 16 20:01:00 2026 +0530
+  → RAMA-L7 <author>, Mon Nov 16 20:01:00 2026 +0530
   → "Implement supervised PD assistant with evidence-bound gates and reproducible baseline"
 ```
 

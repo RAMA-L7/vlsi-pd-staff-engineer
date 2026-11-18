@@ -13,13 +13,365 @@ Usage: acceptance.py <run-dir> [log-dir]
 
 The JSON report is written to <run-dir>/acceptance.json.
 """
+import hashlib
 import json
 import os
 import re
 import sys
 
-RUN = sys.argv[1].rstrip('/')
-LOGDIR = (sys.argv[2].rstrip('/') if len(sys.argv) > 2 else RUN + '/logs')
+# --- Approved physical collateral identities (SR-07 U4) ---------------------
+# SHA-256 values recorded in report.json "inputs" by the pinned published runs
+# (m1d_soc_ctrl_full, m1d_test_counter, m1e2_phys_base) executed against the
+# pinned ORFS commit 25b6429c...  All three independent runs recorded exactly
+# these hashes, so they are used as the approved unmodified-deck constants.
+# A deck/CDL whose recorded hash differs is not the approved collateral.
+APPROVED_DECK_SHA256 = {
+    'sky130hd.lydrc': '89cb0a6677c8b90350219b5495704cb7526b17365e1094e96af4f8541e28c79f',
+    'sky130hd.lylvs': '2c90698c902e8cc66cf7a60ce94d5d7eee2ef0097c3aa33a0869cddedafd237f',
+    'sky130hd.cdl': 'ea3e86abfc92f1de4c16b0eb9268e25ac28c96c523a55b29ebfaef9dd7fdd4c7',
+}
+
+
+def recorded_deck_sha(run, basename):
+    """Return the uniquely recorded SHA-256 for `basename` in <run>/report.json.
+
+    None means the identity is not knowable from the run evidence; callers must
+    report INCONCLUSIVE, never PASS.
+    """
+    rp = os.path.join(run, 'report.json')
+    if not exists(rp):
+        return None
+    try:
+        data = json.loads(read(rp))
+    except Exception:
+        return None
+    inputs = data.get('inputs', {}) if isinstance(data, dict) else {}
+    if not isinstance(inputs, dict):
+        return None
+    found = set()
+    for path, sha in inputs.items():
+        norm = str(path).replace('\\', '/').rstrip('/')
+        if norm == basename or norm.endswith('/' + basename):
+            if sha:
+                found.add(str(sha).lower())
+    return found.pop() if len(found) == 1 else None
+
+
+def _env_deck_path(name):
+    """Authoritative deck path from the environment or the run's env file.
+
+    acceptance.py runs under WSL with env_wsl.env sourced, so REG_DRC_DECK /
+    REG_LVS_DECK are present at stage-acceptance time, unlike report.json which
+    the runner finalises only after all stages have been accepted.
+    """
+    val = os.environ.get(name)
+    if val:
+        return val
+    for envf in (os.path.join(RUN, 'env_wsl.env'), os.path.join(RUN, 'env_win.env')):
+        txt = read(envf)
+        m = re.search(r'^\s*(?:export\s+)?%s=(.+)$' % re.escape(name), txt, re.M)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return None
+
+
+def _sha256_file(path):
+    """SHA-256 of the live file bytes; None when unreadable."""
+    try:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def deck_identity(basename, env_name):
+    """Return (status, detail) for an approved DRC/LVS deck identity.
+
+    Sources (both authoritative): the hash recorded in report.json, if present,
+    and a fresh hash of the deck file named by REG_*_DECK.  Any disagreeing or
+    wrong value is a FAIL; no available value is INCONCLUSIVE.  Never PASS on
+    absence of evidence (SR-07 U4 follow-up).
+    """
+    recorded = recorded_deck_sha(RUN, basename)
+    path = _env_deck_path(env_name)
+    live = None
+    if path and path.replace('\\', '/').rstrip('/').endswith('/' + basename):
+        live = _sha256_file(path)
+    approved = APPROVED_DECK_SHA256[basename]
+    observed = {v for v in (recorded, live) if v}
+    detail = 'recorded=%s live=%s approved=%s path=%s' % (
+        recorded or 'MISSING', live or 'MISSING', approved, path or 'MISSING')
+    if not observed:
+        return 'INCONCLUSIVE', 'no deck SHA available: ' + detail
+    if any(v != approved for v in observed):
+        return 'FAIL', 'deck identity mismatch: ' + detail
+    return 'PASS', 'deck identity verified: ' + detail
+
+
+# --- BEGIN STAGE GATING MODEL (SR-02) ---
+# Pure, deterministic, side-effect-free policy model for acceptance-before-
+# downstream-execution.  run_regression.ps1 implements the same policy in the
+# orchestrator; these functions are the executable specification exercised by
+# the simulated tests in tests/test_stage_gating.py.  Nothing in this block
+# touches the filesystem or reads argv, so it can be exec'd in isolation.
+GATE_SCHEMA = 'sr02-stage-gating-1.0'
+
+# Explicit stage dependency table (topological order preserved).
+STAGE_DEPS = {
+    '00_stage00': [],
+    '01_synthesis': ['00_stage00'],
+    '02_lec_generic': ['01_synthesis'],
+    '03_lec_mapped': ['01_synthesis'],
+    '04_floorplan': ['01_synthesis'],
+    '05_placement': ['04_floorplan'],
+    '06_cts': ['05_placement'],
+    '07_pdn': ['06_cts'],
+    '08_power_connectivity': ['07_pdn'],
+    '09_global_route': ['07_pdn'],
+    '10_detailed_route': ['09_global_route'],
+    '11_extract': ['10_detailed_route'],
+    '12_sta': ['11_extract'],
+    '13_gds': ['11_extract'],
+    '14_drc': ['13_gds'],
+    '15_lvs': ['13_gds', '11_extract'],
+}
+
+# Authoritative required acceptance checks per stage (mirrors the checks
+# emitted below).  An empty list is never accepted as a PASS.
+REQUIRED_CHECKS = {
+    '00_stage00': ['stage00_result_exists', 'stage00_report_exists',
+                   'stage00_overall_pass', 'stage00_no_mandatory_failures'],
+    '01_synthesis': ['generic_netlist_exists', 'mapped_netlist_exists',
+                     'netlists_parse', 'cell_counts_recorded',
+                     'sky130_cells_present_after_mapping', 'sequential_cell_mapped',
+                     'no_unresolved_modules', 'yosys_reported_no_errors'],
+    '02_lec_generic': ['positive_proved', 'no_unproven_points',
+                       'compare_points_generated', 'negative_control_detected',
+                       'negative_control_netlist_differs'],
+    '03_lec_mapped': ['genuine_sky130_models_used', 'official_preprocessor_used',
+                      'all_partitions_proved', 'designs_equivalent',
+                      'negative_control_rejected'],
+    '04_floorplan': ['die_area_valid', 'rows_and_sites_defined', 'pins_assigned',
+                     'tapcells_inserted', 'odb_written'],
+    '05_placement': ['functional_cells_contiguous', 'detailed_placement_completed',
+                     'no_placement_violations', 'odb_written'],
+    '06_cts': ['clock_sinks_identified', 'clock_tree_built',
+               'clock_connectivity_reported', 'odb_written'],
+    '07_pdn': ['power_and_ground_nets_correct', 'power_grid_geometry_generated',
+               'specialnets_contains_routed_power', 'odb_and_def_written'],
+    '08_power_connectivity': ['check_power_grid_vdd', 'check_power_grid_vss',
+                              'stdcell_power_pins_connected',
+                              'welltie_connectivity_verified',
+                              'no_disconnected_power_terminals',
+                              'specialnets_contains_routed_power'],
+    '09_global_route': ['global_routing_completed', 'guide_file_written', 'odb_written'],
+    '10_detailed_route': ['detailed_routing_completed', 'router_violations_zero',
+                          'routed_def_and_odb_written'],
+    '11_extract': ['spef_generated', 'parasitic_segments_nonzero',
+                   'resistance_segments_nonzero', 'extracted_design_matches_routed',
+                   'spef_covers_design_nets'],
+    '12_sta': ['all_corners_reported', 'libraries_loaded', 'constraints_applied',
+               'spef_loaded', 'setup_reports_generated', 'paths_analysed_per_corner',
+               'no_timing_violators', 'wns_recorded_per_corner', 'wns_non_negative',
+               'no_unconstrained_paths'],
+    '13_gds': ['gds_generated', 'topcell_name_correct', 'stdcell_geometry_merged',
+               'nonempty_geometry', 'via_cut_layers_present', 'power_geometry_present',
+               'real_top_level_port_labels_preserved'],
+    '14_drc': ['all_rule_categories_execute', 'zero_actual_violations',
+               'helper_regions_excluded', 'report_db_saved', 'report_db_reopens',
+               'stored_totals_agree_with_log', 'drc_deck_identity'],
+    '15_lvs': ['official_deck_used', 'lvs_deck_identity', 'genuine_sky130_cdl_used',
+               'reference_from_physical_database', 'topcell_configured', 'verdict_match',
+               'lvs_database_written', 'extracted_netlist_written',
+               'device_counts_match', 'no_unmatched_devices', 'no_unmatched_nets',
+               'no_unmatched_subcircuits', 'power_connectivity_correct',
+               'power_structure_verified', 'independent_structure_match'],
+}
+
+# Which provenance tags a stage's acceptance depends on.  A change to any of
+# these invalidates the stage and (via transitive_deps) all of its descendants.
+STAGE_INPUT_TAGS = {
+    '00_stage00': ['RTL', 'SDC', 'TOOLS', 'CONFIG'],
+    '01_synthesis': ['RTL', 'SDC', 'TOOLS', 'CONFIG'],
+    '02_lec_generic': ['RTL', 'SDC', 'TOOLS', 'CONFIG'],
+    '03_lec_mapped': ['RTL', 'SDC', 'PDK', 'DECK', 'TOOLS', 'CONFIG'],
+    '04_floorplan': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'TOOLS', 'CONFIG'],
+    '05_placement': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '06_cts': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '07_pdn': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '08_power_connectivity': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '09_global_route': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '10_detailed_route': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '11_extract': ['RTL', 'SDC', 'PDK', 'LIB', 'PDN', 'DECK', 'TOOLS', 'CONFIG'],
+    '12_sta': ['SDC', 'PDK', 'LIB', 'DECK', 'TOOLS', 'CONFIG'],
+    '13_gds': ['PDK', 'LIB', 'DECK', 'TOOLS', 'CONFIG'],
+    '14_drc': ['PDK', 'DECK', 'TOOLS', 'CONFIG'],
+    '15_lvs': ['PDK', 'DECK', 'LIB', 'TOOLS', 'CONFIG'],
+}
+
+
+def transitive_deps(stage, deps=None):
+    """All ancestors of `stage` (direct + indirect), de-duplicated in order."""
+    deps = STAGE_DEPS if deps is None else deps
+    out = []
+
+    def walk(s):
+        for d in deps.get(s, []):
+            if d not in out:
+                out.append(d)
+            walk(d)
+    walk(stage)
+    return out
+
+
+def descendants(stage, deps=None):
+    """All stages that transitively depend on `stage`."""
+    deps = STAGE_DEPS if deps is None else deps
+    out = []
+    for s in deps:
+        if stage in transitive_deps(s, deps):
+            out.append(s)
+    return out
+
+
+def validate_execution_order(requested, deps=None, already_accepted=()):
+    """Return (order, problems); problems must be empty before execution.
+
+    A partial-stage run is only legal when every ancestor is either included in
+    `requested` or has been accepted previously (`already_accepted`).
+    """
+    deps = STAGE_DEPS if deps is None else deps
+    order = [s for s in deps if s in requested]
+    accepted = set(requested) | set(already_accepted)
+    problems = []
+    for s in order:
+        for d in deps[s]:
+            if d not in accepted:
+                problems.append('%s requires unmet dependency %s' % (s, d))
+    return order, problems
+
+
+def acceptance_status(checks, required):
+    """Engineering acceptance from check statuses only (exit code is separate).
+
+    `checks` maps check-name -> status string.  PASS requires a non-empty
+    required set, every required check present and PASS.  Any FAIL wins over
+    INCONCLUSIVE; missing/NOT_TESTED/INCONCLUSIVE yields INCONCLUSIVE.
+    """
+    if not required:
+        return 'INCONCLUSIVE', ['empty required-check set']
+    failed = []
+    inconclusive = []
+    for name in required:
+        status = checks.get(name)
+        if status is None:
+            inconclusive.append('missing:' + name)
+        elif status == 'FAIL':
+            failed.append(name)
+        elif status != 'PASS':
+            inconclusive.append('%s:%s' % (name, status))
+    if failed:
+        return 'FAIL', failed
+    if inconclusive:
+        return 'INCONCLUSIVE', inconclusive
+    return 'PASS', []
+
+
+def process_status(exit_code, executed):
+    if not executed:
+        return 'NOT_RUN'
+    return 'COMPLETED' if exit_code == 0 else 'FAILED'
+
+
+def qualification(process, engineering, evidence_persisted, validation_only=False):
+    """Distinguish process completion, engineering acceptance, qualification."""
+    if validation_only:
+        return ('VALIDATION_PASS'
+                if engineering == 'PASS' and evidence_persisted
+                else 'NOT_QUALIFIED')
+    if (process == 'COMPLETED' and engineering == 'PASS'
+            and evidence_persisted):
+        return 'QUALIFIED_PASS'
+    return 'NOT_QUALIFIED'
+
+
+def affected_by_change(changed_tags=(), changed_stages=(), stage_tags=None, deps=None):
+    """Stages invalidated by changed provenance tags / stage scripts."""
+    stage_tags = STAGE_INPUT_TAGS if stage_tags is None else stage_tags
+    deps = STAGE_DEPS if deps is None else deps
+    changed_tags = set(changed_tags)
+    affected = set(changed_stages)
+    for stage, tags in stage_tags.items():
+        if changed_tags & set(tags):
+            affected.add(stage)
+    for stage in list(affected):
+        affected.update(descendants(stage, deps))
+    return affected
+
+
+def resume_allowed(stage, prior, current_context, current_script_hash,
+                   artifact_state, invalidated=(), deps=None):
+    """Revalidation decision for `-Resume` (and partial-run prerequisites).
+
+    `prior` is the persisted gate-ledger entry (dict) or None.  `artifact_state`
+    maps artifact rel-path -> 'OK' | 'MISSING' | 'MODIFIED'.  A prior PASS alone
+    is never sufficient: context, script hash, artifacts and invalidation are
+    all rechecked.
+    """
+    deps = STAGE_DEPS if deps is None else deps
+    reasons = []
+    if prior is None:
+        reasons.append('no prior accepted evidence')
+    else:
+        if prior.get('qualification') != 'QUALIFIED_PASS':
+            reasons.append('prior qualification not QUALIFIED_PASS')
+        if not prior.get('evidence_persisted'):
+            reasons.append('prior evidence/provenance persistence failed')
+        if prior.get('script_hash') != current_script_hash:
+            reasons.append('stage script changed')
+        pctx = prior.get('context', {})
+        for tag in STAGE_INPUT_TAGS.get(stage, []):
+            if pctx.get(tag) != current_context.get(tag):
+                reasons.append('provenance changed: ' + tag)
+        for rel, state in (artifact_state or {}).items():
+            if state == 'MISSING':
+                reasons.append('artifact missing: ' + rel)
+            elif state == 'MODIFIED':
+                reasons.append('artifact modified: ' + rel)
+    if stage in set(invalidated):
+        reasons.append('stage invalidated by dependency/input change')
+    for d in deps.get(stage, []):
+        if d in set(invalidated):
+            reasons.append('dependency invalidated: ' + d)
+    return (not reasons), reasons
+
+
+def blocked_by(failed_stage, deps=None):
+    """Stages that must not execute after `failed_stage` fails acceptance."""
+    return descendants(failed_stage, deps)
+
+
+def validate_only_is_fresh():
+    """ValidateOnly must never reuse a prior verdict."""
+    return True
+# --- END STAGE GATING MODEL ---
+
+_args = list(sys.argv[1:])
+_OUT_PATH = None
+_pos = []
+_i = 0
+while _i < len(_args):
+    if _args[_i] == '--out' and _i + 1 < len(_args):
+        _OUT_PATH = _args[_i + 1]
+        _i += 2
+    else:
+        _pos.append(_args[_i])
+        _i += 1
+RUN = (_pos[0] if len(_pos) > 0 else '').rstrip('/')
+LOGDIR = (_pos[1] if len(_pos) > 1 else RUN + '/logs').rstrip('/')
 
 RESULTS = []
 
@@ -39,21 +391,64 @@ def read(path, default=''):
         return default
 
 
+def _clean_design(value):
+    """Normalise a design name from env/JSON/file name, or None if unusable."""
+    if value is None:
+        return None
+    s = str(value).strip().strip('"').strip("'").strip()
+    return s or None
+
+
 def detect_design():
+    """Resolve the design ONLY from authoritative run-time information.
+
+    SR-07 U5: there is no design-name fall-back.  If no authoritative hint is
+    available the result is None and a design-dependent run is INCONCLUSIVE,
+    never a silently assumed ``test_counter``.
+    """
+    name = _clean_design(os.environ.get('REG_DESIGN'))
+    if name:
+        return name
     for envf in (os.path.join(RUN, 'env_wsl.env'), os.path.join(RUN, 'env_win.env')):
         txt = read(envf)
         m = re.search(r'^\s*(?:export\s+)?REG_DESIGN=(.+)$', txt, re.M)
         if m:
-            return m.group(1).strip().strip('"').strip("'")
-    # fallback: infer from synth mapped netlist
-    syn = os.path.join(RUN, 'synth')
+            name = _clean_design(m.group(1))
+            if name:
+                return name
+    # Run-dir manifest: a unique <design>_design.cdl, then report.json /
+    # acceptance.json "design" field.
     try:
-        for fn in os.listdir(syn):
-            if fn.endswith('_synth.v') and not fn.startswith('generic_'):
-                return fn[:-len('_synth.v')]
+        names = set()
+        for fn in os.listdir(RUN):
+            if fn.endswith('_design.cdl'):
+                n = _clean_design(fn[:-len('_design.cdl')])
+                if n:
+                    names.add(n.upper())
+        if len(names) == 1:
+            return names.pop().lower()
     except OSError:
         pass
-    return 'test_counter'
+    for fname in ('report.json', 'acceptance.json'):
+        try:
+            data = json.loads(read(os.path.join(RUN, fname)))
+            n = _clean_design(data.get('design')) if isinstance(data, dict) else None
+            if n:
+                return n
+        except (ValueError, AttributeError):
+            continue
+    # Last resort: a unique mapped synthesis netlist (derived from artifacts).
+    syn = os.path.join(RUN, 'synth')
+    try:
+        names = set()
+        for fn in os.listdir(syn):
+            if fn.endswith('_synth.v') and not fn.startswith('generic_'):
+                names.add(fn[:-len('_synth.v')])
+        if len(names) == 1:
+            return names.pop()
+    except OSError:
+        pass
+    return None
 
 
 DESIGN = detect_design()
@@ -530,7 +925,7 @@ S = '12_sta'
 stasum = RUN + '/sta/sta_summary.txt'
 stalog = RUN + '/sta/sta_all.log'
 if not executed(S):
-    for n in ('all_corners_reported', 'libraries_loaded', 'constraints_applied', 'spef_loaded', 'setup_reports_generated', 'paths_analysed_per_corner', 'no_timing_violators', 'wns_recorded_per_corner', 'wns_non_negative'):
+    for n in ('all_corners_reported', 'libraries_loaded', 'constraints_applied', 'spef_loaded', 'setup_reports_generated', 'paths_analysed_per_corner', 'no_timing_violators', 'wns_recorded_per_corner', 'wns_non_negative', 'no_unconstrained_paths'):
         skip(S, n)
 else:
     check(S, 'all_corners_reported', all(os.path.exists(RUN + '/sta/sta_%s.rpt' % c) for c in ('tt', 'ss', 'ff')), 'TT/SS/FF reports present')
@@ -559,6 +954,35 @@ else:
             elif float(v[idx]) < 0:
                 ok = False
     check(S, 'wns_non_negative', ok, 'every WNS/TNS is recorded and no WNS is negative')
+    # SR-07 U3: a clean check_setup (OpenSTA's check_timing equivalent) run is
+    # mandatory.  Missing artifact / unavailable command / any unconstrained
+    # endpoint is FAIL or INCONCLUSIVE - never PASS.
+    ctpath = RUN + '/sta/sta_check_timing.txt'
+    ct = read(ctpath)
+    mct = re.search(r'STA_CHECK_TIMING_VERDICT:\s*(\S+)', ct)
+    nct = re.search(r'STA_MISSING_CLOCK_ENDPOINTS:\s*(\d+)', ct)
+    mrc = re.search(r'CHECK_SETUP_CATCH:\s*(\S+)', ct)
+    if mct is None:
+        record(S, 'no_unconstrained_paths', 'INCONCLUSIVE',
+               'no check_setup classification artifact (%s)' % ctpath)
+    else:
+        verdict_ct = mct.group(1)
+        catch_ct = mrc.group(1) if mrc else None
+        if catch_ct is None:
+            # Artifact predates the catch marker: cannot prove the probe ran.
+            status_ct = 'INCONCLUSIVE'
+        elif catch_ct != '0':
+            status_ct = 'FAIL'          # check_setup unavailable / Tcl error
+        elif verdict_ct == 'CLEAN':
+            status_ct = 'PASS'
+        elif verdict_ct == 'NOT_RUN':
+            status_ct = 'INCONCLUSIVE'
+        else:  # UNCONSTRAINED or PROBE_FAILED
+            status_ct = 'FAIL'
+        detail_ct = ('check_setup verdict=%s catch=%s findings=%s'
+                     % (verdict_ct, catch_ct or 'MISSING',
+                        nct.group(1) if nct else '?'))
+        record(S, 'no_unconstrained_paths', status_ct, detail_ct)
 
 # ===================================================================== 13
 S = '13_gds'
@@ -587,7 +1011,7 @@ S = '14_drc'
 drclog = RUN + '/drc/drc.log'
 classif = RUN + '/drc/drc_classification.txt'
 if not executed(S):
-    for n in ('all_rule_categories_execute', 'zero_actual_violations', 'helper_regions_excluded', 'report_db_saved', 'report_db_reopens', 'stored_totals_agree_with_log'):
+    for n in ('all_rule_categories_execute', 'zero_actual_violations', 'helper_regions_excluded', 'report_db_saved', 'report_db_reopens', 'stored_totals_agree_with_log', 'drc_deck_identity'):
         skip(S, n)
 else:
     dl = read(drclog)
@@ -602,19 +1026,27 @@ else:
     check(S, 'report_db_reopens', 'REOPEN OK' in dl, 'the report database was reopened')
     m = re.search(r'REOPEN OK: categories=(\d+) cells=\[(.*?)\] items=(\d+) values=(\d+)', dl)
     check(S, 'stored_totals_agree_with_log', m is not None and m.group(3) == '0' and m.group(4) == '0', 'the stored database holds %s items / %s values' % (m.group(3) if m else '?', m.group(4) if m else '?'))
+    # SR-07 U4: enforce the approved DRC deck identity using the live deck file
+    # named by REG_DRC_DECK (available before report.json is finalised).
+    dstat, ddetail = deck_identity('sky130hd.lydrc', 'REG_DRC_DECK')
+    record(S, 'drc_deck_identity', dstat, ddetail)
 
 # ===================================================================== 15
 S = '15_lvs'
 lvlog = RUN + '/15_lvs/lvs.log'
 comp = RUN + '/lvs_compare.txt'
 if not executed(S):
-    for n in ('official_deck_used', 'genuine_sky130_cdl_used', 'reference_from_physical_database', 'topcell_configured', 'verdict_match', 'lvs_database_written', 'extracted_netlist_written', 'device_counts_match', 'no_unmatched_devices', 'no_unmatched_nets', 'no_unmatched_subcircuits', 'power_connectivity_correct', 'power_structure_verified', 'independent_structure_match'):
+    for n in ('official_deck_used', 'lvs_deck_identity', 'genuine_sky130_cdl_used', 'reference_from_physical_database', 'topcell_configured', 'verdict_match', 'lvs_database_written', 'extracted_netlist_written', 'device_counts_match', 'no_unmatched_devices', 'no_unmatched_nets', 'no_unmatched_subcircuits', 'power_connectivity_correct', 'power_structure_verified', 'independent_structure_match'):
         skip(S, n)
 else:
-    check(S, 'official_deck_used', 'sky130hd.lylvs' in os.environ.get('REG_LVS_DECK', 'sky130hd.lylvs'), 'the official unmodified deck')
+    check(S, 'official_deck_used', 'sky130hd.lylvs' in os.environ.get('REG_LVS_DECK', 'sky130hd.lylvs'), 'the official unmodified deck (env string)')
+    # SR-07 U4: the env string alone is not identity.  Hash the live LVS deck
+    # named by REG_LVS_DECK; wrong/missing hash -> FAIL/INCONCLUSIVE.
+    lstat, ldetail = deck_identity('sky130hd.lylvs', 'REG_LVS_DECK')
+    record(S, 'lvs_deck_identity', lstat, ldetail)
     check(S, 'genuine_sky130_cdl_used', exists(RUN + '/6_final_concat.cdl'), 'the reference CDL + official sky130hd.cdl')
     check(S, 'reference_from_physical_database', exists(RUN + '/%s_design.cdl' % DESIGN), 'the reference netlist was generated from the routed ODB')
-    check(S, 'topcell_configured', bool(grep(lvlog, r'Netlists|%s' % re.escape(DESIGN))), 'top_cell=%s was passed to the deck' % DESIGN)
+    check(S, 'topcell_configured', bool(grep(lvlog, r'Netlists|%s' % re.escape(str(DESIGN or '')))), 'top_cell=%s was passed to the deck' % DESIGN)
     check(S, 'verdict_match', 'Congratulations! Netlists match' in read(lvlog), 'the tool verdict is an explicit match')
     check(S, 'lvs_database_written', exists(RUN + '/15_lvs/15_lvs.lvsdb'), 'the LVS database')
     check(S, 'extracted_netlist_written', exists(RUN + '/15_lvs/15_lvs_extracted.cir'), 'the extracted netlist')
@@ -706,6 +1138,14 @@ else:
     except Exception as e:
         check(S, 'manifest_run_identity_matches', False, str(e))
 
+# SR-07 U5: a design-dependent run with no authoritative design hint is
+# INCONCLUSIVE.  Checking only when such a stage actually ran keeps pure
+# environment/probe runs (e.g. stage-00-only fixtures) unaffected.
+if DESIGN is None and any(executed(s) for s in
+                          ('01_synthesis', '03_lec_mapped', '13_gds', '15_lvs')):
+    record('manifest', 'design_identified', 'INCONCLUSIVE',
+           'no authoritative design hint (REG_DESIGN / env file / run manifest)')
+
 # ===================================================================== output
 npass = len([r for r in RESULTS if r['status'] == 'PASS'])
 nfail = len([r for r in RESULTS if r['status'] == 'FAIL'])
@@ -715,7 +1155,12 @@ print('')
 print('ACCEPTANCE: %d passed, %d failed, %d not tested, %d total' % (npass, nfail, nskip, len(RESULTS)))
 if nincon:
     print('ACCEPTANCE_INCONCLUSIVE: %d (counts as failure for the exit code)' % nincon)
-with open(RUN + '/acceptance.json', 'w') as f:
+_out = _OUT_PATH or (RUN + '/acceptance.json')
+with open(_out, 'w') as f:
     json.dump({'checks': RESULTS, 'passed': npass, 'failed': nfail, 'inconclusive': nincon,
-               'not_tested': nskip, 'total': len(RESULTS), 'design': DESIGN}, f, indent=2)
+               'not_tested': nskip, 'total': len(RESULTS), 'design': DESIGN,
+               'gate_schema': GATE_SCHEMA}, f, indent=2)
+print('ACCEPTANCE_JSON: %s' % _out)
+# NOTE: exit 0 is NOT an engineering PASS by itself; the runner always parses
+# the per-stage required checks from this JSON (SR-02, finding 10).
 sys.exit(0 if (nfail == 0 and nincon == 0) else 1)

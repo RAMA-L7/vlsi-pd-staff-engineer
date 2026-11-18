@@ -36,6 +36,17 @@ read_verilog $REG_RUN/11_final.v
 link_design $REG_DESIGN
 read_sdc $REG_RUN/11_final.sdc
 read_spef $REG_RUN/11_final.spef
+# Unconstrained-path detection (SR-07 U3): run OpenSTA's own constraint sanity
+# check and bracket its output with machine-readable markers.  OpenSTA 3.1.0
+# has no check_timing command; check_setup is its equivalent (verified via
+# help check_setup).  NOTE: this heredoc is UNQUOTED so the shell expands it:
+# never use backticks here (they would run as shell commands, not reach Tcl).
+# catch makes a failed/unavailable command observable to the classifier.
+puts "=== CHECK_TIMING ==="
+set _ct_rc [catch {check_setup -verbose -unconstrained_endpoints -no_input_delay -no_output_delay -no_clock} _ct_out]
+puts "STA_TRACE check_setup_catch=\$_ct_rc"
+puts "STA_TRACE check_setup_result=\$_ct_out"
+puts "=== CHECK_TIMING_END ==="
 puts "STA_TRACE read_liberty_corner_count 3"
 puts "STA_TRACE read_sdc $REG_RUN/11_final.sdc"
 puts "STA_TRACE read_spef $REG_RUN/11_final.spef"
@@ -146,6 +157,51 @@ with open('%s/sta_summary.txt' % out, 'w') as f:
             '%.4f' % th if th is not None else 'NA'))
         total_viol += vs + vh
     f.write('total_violators,%d\n' % total_viol)
+
+# --- check_timing / unconstrained-path classification (SR-07 U3) -------------
+mct = re.search(r'^=== CHECK_TIMING ===\s*$(.*?)^=== CHECK_TIMING_END ===\s*$',
+                txt, re.S | re.M)
+ct = mct.group(1) if mct else ''
+# Any Warning from check_setup is a constraint-sanity finding; also match the
+# concrete OpenSTA phrasings observed in direct probes.
+ctpat = re.compile(
+    r'^\s*warning\s*:|unconstrained|not constrained|'
+    r'missing\s+set_(?:input|output)_delay|(?:input|output) ports? missing|'
+    r'no\s+(?:related\s+)?clock|missing clock|not clocked|'
+    r'is not a valid startpoint|no paths found|has no clock|'
+    r'unmapped|cannot find port', re.I)
+negpat = re.compile(r'\b0\s+unconstrained|\bno\s+unconstrained|'
+                    r'\b0\s+endpoints?[^\n]*unconstrained', re.I)
+hits = []
+for ln in ct.splitlines():
+    s = ln.strip()
+    if s and ctpat.search(s) and not negpat.search(s):
+        hits.append(s)
+# The Tcl catch result proves the probe command actually executed.  Missing or
+# nonzero catch => the gate must NOT pass.
+rcm = re.search(r'^STA_TRACE check_setup_catch=(\S+)\s*$', ct, re.M)
+ct_rc = rcm.group(1) if rcm else 'MISSING'
+if not mct:
+    verdict = 'NOT_RUN'
+elif ct_rc != '0':
+    verdict = 'PROBE_FAILED'
+elif hits:
+    verdict = 'UNCONSTRAINED'
+else:
+    verdict = 'CLEAN'
+with open('%s/sta_check_timing.txt' % out, 'w') as f:
+    f.write('CHECK_TIMING_SECTION: %s\n' % ('YES' if mct else 'NO'))
+    f.write('CHECK_SETUP_CATCH: %s\n' % ct_rc)
+    f.write('STA_MISSING_CLOCK_ENDPOINTS: %d\n' % len(hits))
+    f.write('STA_CHECK_TIMING_VERDICT: %s\n' % verdict)
+    for h in hits[:20]:
+        f.write('HIT: %s\n' % h)
+# Append the verdict to the STA log so read-only diagnosis parsers observe the
+# same authoritative classification (assistant/diagnosis.py).
+with open(log, 'a') as f:
+    f.write('\nSTA_CHECK_TIMING_VERDICT: %s\n' % verdict)
+    f.write('CHECK_SETUP_CATCH: %s\n' % ct_rc)
+    f.write('STA_MISSING_CLOCK_ENDPOINTS: %d\n' % len(hits))
 print(open('%s/sta_summary.txt' % out).read())
 PYEOF
 

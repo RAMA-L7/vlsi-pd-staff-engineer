@@ -2,11 +2,80 @@
 
 ## Multi-Agent Engineering Framework — Multi-Design v2.0
 
-**[feature/F-01-claude-agent-discovery] — Multi-Design Framework v2.0**
+**[main] — Multi-Design Framework v2.0**
 
-This repository implements a complete multi-agent VLSI Physical Design engineering framework that coordinates specialist AI agents, executable engineering skills, EDA tools, and automated verification procedures through a disciplined stage-gate flow.
+This repository provides a deterministic, scripted RTL-to-GDSII physical-design regression plus advisory agent/skill process guidance. The executable executor is `regression/run_regression.ps1` and `assistant/`; "agents" and "skills" are documentation/process guidance, **not** a claim that live AI agents performed the EDA runs (see "Automated executor vs AI-agent orchestration" below).
 
-**Status**: Framework configured and fully documented across Phases 14–17B. The 15-stage OpenROAD-based regression is executable from this repository via the documented baseline command (`python -m assistant baseline`) — see `docs/reviews/remediation-report.md` for the current end-to-end run evidence (16 stages PASS on `test_counter`, reproduced twice). Agent and skill configurations, stage scripts, and evidence from prior runs are preserved and independently verifiable. Earlier README claims that live execution was "blocked by a Code Mode runtime shell integration issue" predate this remediation and no longer apply to the baseline command path.
+**Status**: The 15-stage OpenROAD-based regression is executable from this repository via the documented baseline command (see "One documented baseline command" below). The authoritative status of this checkout is the single qualification matrix immediately below; all other tables in this README are dated historical context.
+
+---
+
+## Authoritative qualification matrix — this checkout (SR-10 / SR-08)
+
+**Exact identity:** repository commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b`, tree `ab0bcf96d00e99a1b1a6cd46f41fde159661791b` (second-review baseline). **Recorded baseline run IDs:** `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (16/16 stages PASS, 95/95 checks each; the `baseline_20261116` pair is byte-identical on mapped/generic netlists and GDSII geometry after timestamp stripping). The `baseline_20261116*` runs were executed on historical published ancestor commit `6c4a2640b95e869fe3f0c1367dca5aaf9626f3fc`; current `origin/main` before this publication is `0a9eb57`; `final_r3`/`final_r4` evidence is in `D:\audit\second_review_evidence_20261118\`. No fresh 15-stage EDA run was performed against `0a9eb57` in this documentation/reproducibility pass. Evidence: `D:\audit\pd_assistant_evidence_20261116\`; parameters in `docs/reviews/remediation-report.md:86-108`.
+
+| Check | Status | Evidence (commit / run ID) | Conditions / limits |
+|---|---|---|---|
+| `test_counter` 15-stage baseline | **DEMONSTRATED** (standard-cell, no macros) | `6c4a264` / `baseline_20261116`, `baseline_20261116_r2` | Sky130 HD, TT/SS/FF Liberty; pinned tool/PDK/deck hashes in `assistant/pins.json`; GDSII compared after BGNLIB timestamp stripping. Not signoff. |
+| `test_counter` LEC (generic + mapped) | **DEMONSTRATED** | same runs | Yosys/EQY with negative controls; RTL ≡ mapped netlist. |
+| `test_counter` DRC / LVS / GDSII | **DEMONSTRATED** (academic decks) | same runs | Official `sky130hd.lydrc` / `sky130hd.lylvs` / `sky130hd.lyt` (hashes pinned); no qualified signoff claimed. |
+| `soc_ctrl` mapped LEC | **DEMONSTRATED** (8/8 partitions, negative control rejected) | Milestone 1D / `run_pub_m1d_soc_ctrl_full` | Sky130 HD EQY; evidence in `D:\audit\second_review_evidence_20261118\physical\tool_outputs\`. |
+| `soc_ctrl` full physical flow | **FAILED QUALIFICATION** (retained failure) | Milestone 1D / `run_pub_m1d_soc_ctrl_full` | 14/16 stages; SS setup WNS historical −2.3378 ns / 3 violators; current best routed maj3_2 WNS −0.852429 ns, TNS −0.920336 ns, 2 violators (both FAIL); stage-15 gate FAIL in the historical run (secondary comparator then hard-coded `TOP='TEST_COUNTER'`; that comparator is now design-independent and official KLayout verdict is PASS). No signoff claim. |
+| Macro-based example | **NO-MACROS / NOT APPLICABLE** | `python -m assistant info` (`NA-RULE:NO-MACROS`) | No macro/abstract placement flow is implemented; supported examples are standard-cell only. |
+| IR drop / EM / antenna / UPF / post-fill extraction | **UNSUPPORTED** | `assistant/baseline.py::UNSUPPORTED_CAPABILITIES` | No executable stage exists; do not claim. |
+| Automated regression, tool/PDK/deck provenance pins, preflight | **SUPPORTED** (script exists) | this commit `0a9eb57`; `assistant/pins.json`, `regression/checks/stage00_preflight.py` | Supported ≠ demonstrated on a fresh run of this exact commit; pins record the developer-host snapshot. |
+
+**Reading the matrix:** "DEMONSTRATED" = a recorded run produced fresh tool evidence; "SUPPORTED" = deterministic script/config exists; "UNSUPPORTED" / "NO-MACROS" = no executable stage; "FAILED QUALIFICATION" = real failure retained, not suppressed. Historical Phase 14–18 results below are dated and superseded by this matrix wherever they disagree.
+
+**Portability caveat:** pins and the supported setup describe one validated developer host. They do **not** establish independent portability or signoff on another machine; re-probe and report drift there.
+
+## Publication status and current verification (2026-11-18)
+
+**Final independent verdict:** **READY WITH LIMITATIONS** for external evaluation of the supervised academic PD workflow. This is not foundry signoff, not soc_ctrl timing closure, not autonomous RTL-to-GDSII and not tapeout readiness. Full report: `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`.
+
+**Research study (companion):** the agent performance evaluation study is under `docs/research/` with a frozen protocol, benchmark specifications, scoring rubric, templates and preserved BLOCKED pilot records. Status: **PROTOCOL COMPLETE / PILOT BLOCKED BY MODEL ACCESS**; no model-executed runs or scores exist. See `docs/research/STUDY_STATUS.md`.
+
+**Current verification results (independent audit, 2026-11-18):** pytest **324 passed**; framework regression **47 PASS / 0 FAIL / 0 SKIP**; preflight **PASS** with 22/22 platform-collateral hashes MATCH; real `test_counter` baseline **PASS**, 16/16 stages, byte-identical generic `3148c5c3…` and mapped `7120e545…` netlists. Earlier 304-pass and 47/0/0 results are historical but consistent.
+
+**Current blockers (never counted as PASS):**
+
+| Item | Status | Reason |
+|---|---|---|
+| Foundry signoff | **BLOCKED** | No licensed foundry tool, deck, runset, calibration or signoff authority; academic KLayout results are not signoff |
+| soc_ctrl routed SS timing | **FAIL / BLOCKED** | Best routed `maj3_2` WNS −0.852429 ns, TNS −0.920336 ns, 2 violators at unchanged 10 ns / 2 ns; historical candidate B −1.832469 ns / 4 violators preserved |
+| Other hosts | **NOT_TESTED** | Reproducibility verified on the validated host only; portable overrides are documented but not cross-host proven |
+| Macro example | **NOT_APPLICABLE** | `NA-RULE:NO-MACROS`; no macro/abstract view flow implemented |
+
+**Key reports:** `docs/reviews/second-review.md`, `docs/reviews/final-validation-report.md`, `docs/reviews/NEXT_PHASE_TECHNICAL_REPORT.md`, `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`, `docs/reviews/MILESTONE_1G_TECHNICAL_REVIEW.md`, `docs/research/STUDY_STATUS.md`.
+
+**Setup / reproduction:** use `docs/SETUP.md` (supported platform, minimum versions, environment overrides and one documented baseline command). Host-specific `D:\` paths shown elsewhere are validated-host examples, not private configuration or portable requirements.
+
+**Publication event:** authorized by the project owner; commit SHA, push result and file manifest are recorded in the external `PUBLICATION_REPORT.md` under the validated-host evidence root.
+
+---
+
+### Automated executor vs AI-agent orchestration
+
+- **Automated executor (deterministic, in-repo):** `regression/run_regression.ps1`, `regression/stages/*`, `regression/checks/*`, and `assistant/*.py`. These scripts, not AI agents, perform stage execution, acceptance checks, provenance capture and exit-code signaling.
+- **AI-agent / skill guidance (advisory):** the `agents/` and `skills/` documents and the stage-gate narrative describe a discipline for a human or LLM operator. Prompt-level gate rules are advisory only; executable enforcement lives in `assistant/` (`docs/reviews/remediation-tracker.md` finding A).
+- No claim is made that live AI agents selected or executed the recorded runs.
+
+### PPA claim conditions
+
+Any power / performance / area number in this README is valid **only** under all of: the exact design and top module, the 10 ns (soc_ctrl) or SDC-defined (test_counter) constraint set, Sky130 HD TT/SS/FF Liberty files with the SHA-256s in `assistant/pins.json`, the extraction deck/rules hashes in that file, the tool versions/flow commit recorded there, and the named run ID. Values quoted in the Phase 18P section below (~270.259 / ~340.326 / ~345.331 µm²) are RTL-synthesis area estimates from the documented mapping analysis (`docs/reviews/M1G_MAPPING_ANALYSIS.md`); they are **not** signoff PPA and carry no routed-parasitic or power measurement.
+
+### One documented baseline command
+
+Use the project interpreter (the `python` on PATH may be a Microsoft Store alias stub — `docs/SETUP.md`):
+
+```powershell
+& D:\tools\venv\Scripts\python.exe -m assistant baseline --design test_counter --run-id <ID>
+# Equivalent: ... -m assistant.baseline --design test_counter --run-id <ID>
+# Add --clean to reuse a run id in a fresh isolated dir; --no-isolate for legacy shared out.
+# --dry-run records provenance but never returns success (exit 1).
+```
+
+Each invocation writes to its own isolated `baseline_<design>_<run-id>/` directory under `--out`. Preflight is documented in `docs/REGRESSION.md`.
 
 ---
 
@@ -24,15 +93,17 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 
 **Framework Scope**: Sky130 HD ASIC physical design flow from RTL to GDSII, with two independently configurable designs (test_counter and soc_ctrl), negative-test fault detection, and reproducible validation.
 
-**Current Execution Status**: The documented baseline command (`python -m assistant baseline`) runs the full regression on `test_counter` - 16/16 stages PASS, 95/95 checks, reproduced with byte-identical netlists. Milestone 1D added the approved `soc_ctrl` promotion inputs, a genuine 8/8 mapped-LEC proof, and a full physical run with honest failures (SS timing and stage-15 LVS gate); see the qualification table below. A Code Mode runtime shell integration issue was historically reported during Phases 14-17A and is documented only as historical context.
+**Current Execution Status**: See the authoritative matrix above. `test_counter` was demonstrated end-to-end (16/16 stages, 95/95 checks, reproduced twice) on the recorded run IDs; `soc_ctrl` has a genuine 8/8 mapped-LEC proof but its full physical run retained honest failures (SS timing, stage-15 comparator gate) and is **not** physically qualified. A Code Mode shell integration issue was historically reported during Phases 14–17A and is context only.
 
-**Evidence directories**: `D:\audit\phase14_automated_regression_20261112\`, `D:\audit\phase15_multidesign_validation_20261114\`, `D:\audit\phase16_execution_closure_20261114\`
+**Evidence directories (dated)**: in-repo milestone reports `docs/reviews/MILESTONE_1D_REPORT.md` and `docs/reviews/MILESTONE_1G_REPORT.md`; validated-host roots `D:\audit\pd_assistant_evidence_20261116\`, `D:\audit\second_review_evidence_20261118\`, `D:\audit\next_phase_evidence_20261118\`, `D:\audit\independent_qualification_20261118\`. External roots are validated-host examples, not portable paths.
 
 ---
 
 ## B. Key Capabilities
 
-### Framework-Supported Capabilities (Scripts Configured, Evidence from Phase 14 test_counter)
+### Framework capabilities (SUPPORTED = script/config present; DEMONSTRATED = recorded run)
+
+Statuses below are historical labels retained for traceability; the authoritative matrix above decides any conflict. "Configured"/"Supported" never implies a fresh successful run on this exact commit.
 
 | Capability | Status | Evidence |
 |---|---|---|
@@ -63,10 +134,11 @@ This framework adapts the "Senior Staff Engineer with Sub-Agent Teams" pattern t
 | **Post-metal-fill extraction / post-fill timing closure** | **UNSUPPORTED** | Flow stops at routed extraction (stage 11) + STA (stage 12); fill extraction is not demonstrated |
 | **Qualified/signoff-grade parasitic extraction** | **UNSUPPORTED** | Academic OpenROAD extraction only; no QRC/StarRC integration |
 | **Autonomous RTL-to-GDSII / tapeout readiness** | **NOT CLAIMED** | The external review verdict stands: evidence does not justify autonomous or signoff claims |
+| **Macro-based example / macro placement flow** | **NO-MACROS — NOT APPLICABLE** | No macro/abstract view or macro placement stage is implemented; `python -m assistant info` reports `NA-RULE:NO-MACROS`. Supported examples are standard-cell only (`test_counter`, `soc_ctrl`) |
 
 These gaps are tracked in `docs/reviews/remediation-tracker.md` (findings J, K, N).
 
-### Design-Specific Execution Evidence
+### Historical design-specific evidence (dated; superseded by the authoritative matrix above)
 
 | Design | Capability | Phase | Result |
 |---|---|---|---|
@@ -76,23 +148,25 @@ These gaps are tracked in `docs/reviews/remediation-tracker.md` (findings J, K, 
 | **test_counter** | DRC PASS | 13 | 295 categories, 0 actual violations |
 | **test_counter** | LVS PASS | 13 | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
 | **test_counter** | REPRODUCIBLE | 14 | Two runs A&B, 20/20 identical artefacts |
-| **soc_ctrl** | Framework configured | 15 | `-Design soc_ctrl` parameter operational; stage scripts design-aware |
-| **soc_ctrl** | Canonical RTL + SDC tracked | 1D | `examples/soc_ctrl/rtl/soc_ctrl.v` (approved arithmetic correction, SHA `2a7e028d…`) and canonical 10 ns SDC (SHA `2a9126e7…`) are included in this release |
+| **soc_ctrl** | Full run executed, FAILED QUALIFICATION | 15 | `-Design soc_ctrl` parameter operational; stage scripts design-aware; Milestone 1D full run `run_pub_m1d_soc_ctrl_full` (14/16 stages, STA/LVS failures retained) |
+| **soc_ctrl** | Canonical RTL + SDC tracked | 1D | `examples/soc_ctrl/rtl/soc_ctrl.v` (approved arithmetic correction, SHA `2a7e028d…`) and canonical 10 ns SDC are **present at reviewed commit `0a9eb57`**; the exact SDC bytes are pinned by `regression/configs/soc_ctrl_10ns.json` (do not freeze a stale hash here) |
 | **soc_ctrl** | 10 ns timing configuration | 1D | Canonical SDC period 10.0 ns approved; `regression/configs/soc_ctrl_10ns.json` included as a reference artifact (not consumed by the runner until a separately approved wiring change) |
 | **soc_ctrl** | Generic + mapped LEC PASS | 1D | Genuine EQY 8/8 partitions proved with Sky130 HD; negative control rejected; no false PASS |
-| **soc_ctrl** | Full 15-stage physical flow | 1D | 14/16 stages PASS; DRC 0 violations; **STA FAIL at SS corner** (WNS -2.3378 ns, 3 violated paths); **stage-15 LVS FAIL as-run** (secondary comparator hard-codes `TOP = 'TEST_COUNTER'`; official KLayout verdict PASS). Full physical qualification is NOT claimed |
+| **soc_ctrl** | Full 15-stage physical flow | 1D | 14/16 stages PASS; DRC 0 violations; **STA FAIL at SS corner** (WNS -2.3378 ns, 3 violated paths); **stage-15 LVS FAIL as-run** (historical secondary comparator then hard-coded `TOP='TEST_COUNTER'`; that comparator is now fixed and design-independent; official KLayout verdict PASS). Full physical qualification is NOT claimed |
 
-**Important**: test_counter is fully qualified end-to-end. soc_ctrl has genuine equivalence evidence but is **not** physically qualified: SS timing is not closed and the LVS gate fails due to a tooling defect (fix deferred to a later milestone). Historical "shell blocker" references are context only. Publish evidence and failure details are in `docs/reviews/`.
+**Important**: `test_counter` has a demonstrated end-to-end baseline (not a signoff qualification). `soc_ctrl` has genuine equivalence evidence but is **not** physically qualified: SS timing is not closed, and the historical LVS gate FAIL was caused by a comparator tooling defect that is now fixed and design-independent (the as-run failure in `run_pub_m1d_soc_ctrl_full` is retained). Historical "shell blocker" references are context only. Failure details are in `docs/reviews/`.
 
-### Current qualification status (Milestone 1D, 2026-11-17)
+### Historical qualification snapshot (Milestone 1D, 2026-11-17; superseded by the authoritative matrix above)
+
+Run ID: `run_pub_m1d_soc_ctrl_full` (soc_ctrl physical); test_counter baseline runs `baseline_20261116` / `_r2`.
 
 | Check | Result |
 |---|---|
-| test_counter full flow | **PASS** - 16/16 stages, 95/95 checks |
+| test_counter full flow | **PASS (academic baseline, not signoff)** - 16/16 stages, 95/95 checks |
 | soc_ctrl mapped LEC (Sky130 HD, EQY) | **PASS** - 8/8 partitions, negative control rejected |
-| soc_ctrl STA | **FAIL** - SS setup WNS -2.3378 ns, TNS -4.0984, 3 violated paths (TT/FF clean) |
-| soc_ctrl DRC | **PASS** - 0 actual violations |
-| soc_ctrl LVS (gate as-run) | **FAIL** - secondary comparator hard-coded top name; official KLayout verdict PASS |
+| soc_ctrl STA | **FAIL** - historical SS WNS -2.3378 ns / TNS -4.0984 / 3 violators; current best routed maj3_2 WNS -0.852429 ns, TNS -0.920336 ns, 2 violators (TT/FF clean); still FAIL |
+| soc_ctrl DRC | **PASS (academic router/public deck, not signoff)** - 0 actual violations |
+| soc_ctrl LVS (gate as-run) | **FAIL** - historical comparator hard-coded top name (now fixed, design-independent); official KLayout verdict PASS |
 | Publication / signoff | **NOT CLAIMED** - no full physical qualification for soc_ctrl |
 
 ---
@@ -166,6 +240,16 @@ Missing any item = handoff is incomplete = next stage cannot start.
 9. **Evidence is preserved** — Per-check result files, artifact paths, and SHA256 hashes are written to the evidence directory. JSON reports (`report.json`, `acceptance.json`, `summary.md`) are updated with stage status and per-check results.
 
 10. **Orchestrator returns the engineering result** — Overall stage status is determined by check results. If all stages pass, the regression proceeds. If any stage fails, the three-fix rule or forensic debugger is invoked.
+
+### Automated executor vs AI-agent orchestration (authoritative)
+
+The lifecycle narrative above describes the *intended discipline*, not an assertion that live AI agents executed the recorded runs. Concretely:
+
+| Layer | What it is | What it does **not** do |
+|---|---|---|
+| `regression/run_regression.ps1`, `regression/stages/*`, `regression/checks/*`, `assistant/*.py` | Deterministic in-repo executor: stage invocation, acceptance classification, provenance capture, exit codes | Does not require an AI agent to be present |
+| `agents/*`, `skills/*`, stage-gate prose | Advisory process guidance for a human or LLM operator; prompt-level gates are advisory only (enforcement is in `assistant/`) | Does not itself run tools or produce PASS evidence |
+| Recorded evidence (`baseline_20261116*`, `run_pub_m1d_soc_ctrl_full`) | Output of the deterministic scripts on the pinned host | Not proof of autonomous or AI-agent-driven execution |
 
 ### Mermaid Flowchart: Engineering Lifecycle
 
@@ -292,7 +376,7 @@ The engineering workflow follows: agent → skill → inputs → EDA tool execut
 
 ## G. Engineering Validation Results
 
-### Historical Results (Phase 14 test_counter — Verified Execution)
+### Historical results — 2026-11-12 (Phase 14 test_counter, verified execution)
 
 | # | Result | Design | Phase | Details |
 |---|---|---|---|---|
@@ -316,15 +400,13 @@ The engineering workflow follows: agent → skill → inputs → EDA tool execut
 - All 13 verification results above are from actual live runs
 - REPRODUCIBLE classification confirmed across two independent runs
 
-**soc_ctrl** (Phase 17B — configured, not executed):
-- Framework scripts configured with design-aware paths
-- `-Design soc_ctrl` parameter operational
-- Stage scripts read `$env:REG_DESIGN` for design selection
-- **Do NOT claim** any of the above results for soc_ctrl
-- Full regression not executed for `soc_ctrl` in this pass; the baseline command path works for `test_counter` (the historically reported shell blocker no longer applies)
-- RTL + SDC created for framework compatibility; does not claim gate-level equivalence with upstream `D:\tools\eda-work\soc_ctrl_stub.v`
+**soc_ctrl** (Phase 17B configuration, then a Milestone 1D physical run — see authoritative matrix):
+- Framework scripts configured with design-aware paths; `-Design soc_ctrl` parameter operational; stage scripts read `$env:REG_DESIGN`
+- The Phase 14 `test_counter` results above are **not** attributed to soc_ctrl
+- A full soc_ctrl physical run **was** executed in Milestone 1D (`run_pub_m1d_soc_ctrl_full`): 14/16 stages PASS, DRC 0 violations, SS setup FAIL and stage-15 comparator FAIL — both retained as real failures, not suppressed
+- RTL + SDC are adaptations for framework compatibility; no gate-level equivalence with upstream `D:\tools\eda-work\soc_ctrl_stub.v` is claimed
 
-**Clear Distinction**: Results attributed to test_counter are from verified Phase 14 execution. soc_ctrl results are only from configuration; no live execution claims are made.
+**Clear Distinction**: Results attributed to test_counter are from verified Phase 14 execution. soc_ctrl results are from the Milestone 1D full run (`run_pub_m1d_soc_ctrl_full`), which executed but FAILED QUALIFICATION with STA/LVS failures retained; no signoff is claimed.
 
 ---
 
@@ -336,7 +418,7 @@ The engineering workflow follows: agent → skill → inputs → EDA tool execut
 # test_counter (Phase 14 baseline; REPRODUCIABLE verified)
 powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter
 
-# soc_ctrl (Phase 15 integration; configured, not executed)
+# soc_ctrl (Phase 15 integration; full run executed in Milestone 1D, FAILED QUALIFICATION)
 powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl
 
 # Run all stages (default, uses test_counter)
@@ -353,11 +435,11 @@ powershell -ExecutionPolicy Bypass -File run_regression.ps1
 - Baselined REPRODUCIBLE (Phase 14, historical): 88/88 checks; current baseline 95/95; 20/20 identical artefacts
 
 **soc_ctrl**:
-- RTL: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` is ABSENT from published commit 27b5d1c (untracked in preserved tree, SHA `7d3d6300…e752a`); do not claim it is present
-- SDC: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` is ABSENT from published commit 27b5d1c (untracked in preserved tree, SHA `2a9126e7…e644`)
+- RTL: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` is **tracked at reviewed commit `0a9eb57`** (it was absent from the earlier `27b5d1c` snapshot)
+- SDC: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` is **tracked at `0a9eb57`**; approved 10 ns bytes pinned by `regression/configs/soc_ctrl_10ns.json` and `assistant/pins.json:design_inputs.soc_ctrl_sdc`
 - Top Module: `soc_ctrl`
 - Artifact Prefix: `soc_ctrl`
-- Framework configured; full regression pending execution
+- A full physical run exists (`run_pub_m1d_soc_ctrl_full`) but did not qualify (SS timing and LVS gate FAIL); see authoritative matrix
 
 ### Stage Execution
 
@@ -424,7 +506,7 @@ JSON reports with `schema_version`, per-stage status, per-check results, artifac
 ### Command Examples
 
 ```powershell
-# Design selection (configuration only; no live execution)
+# Design selection (example commands; see recorded baseline / full-run IDs in the authoritative matrix above)
 powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter
 powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl
 
@@ -441,7 +523,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 # REG_DESIGN, REG_RTL, REG_SDC, REG_LIB_TT, REG_LIB_SS, REG_LIB_FF, REG_CDL, REG_NETLIST_MAPPED
 ```
 
-**Clear Distinction**: Configured (framework supported, scripts in place) vs. Executed (live tool invocation, fresh results, independent verification). test_counter is Executed end-to-end (16-stage baseline, reproduced twice); soc_ctrl remains Configured-only.
+**Clear Distinction**: Configured (framework supported, scripts in place) vs. Executed (live tool invocation, fresh results, independent verification). test_counter is Executed end-to-end (16-stage baseline, reproduced across `baseline_20261116` / `_r2` and `final_r3` / `final_r4`); soc_ctrl was Executed in the Milestone 1D full run but FAILED QUALIFICATION (STA/LVS failures retained), not Configured-only.
 
 ---
 
@@ -454,7 +536,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 **Provenance**:
 - RTL Source: `examples/test-counter/rtl/test_counter.v`
 - SDC Source: `examples/test-counter/rtl/test_counter.sdc`
-- Framework Branch: `feature/F-01-claude-agent-discovery`
+- Framework Branch: `main`
 
 **Top Module**: `counter`
 
@@ -483,27 +565,29 @@ $Resume = $true  # Skip completed stages; only run remaining
 | **Global routing** | PASS | N cells routed |
 | **Detailed routing** | PASS | DRC-clean route |
 | **Extraction** | PASS | SPEF generated |
-| **TT STA** | PASS | WNS 5.4550 ns, 0 violators |
-| **SS STA** | PASS | WNS 2.6745 ns, 0 violators |
-| **FF STA** | PASS | WNS -0.6159 ns, 0 violators |
+| **TT STA** | PASS | setup WNS +5.4550 ns / hold WNS +0.6159 ns, 0 violators |
+| **SS STA** | PASS | setup WNS +2.6745 ns / hold WNS +1.2335 ns, 0 violators |
+| **FF STA** | PASS | setup WNS +5.7003 ns / hold WNS +0.3917 ns, 0 violators |
 | **GDSII** | PASS | Geometry identical after timestamp stripping |
 | **DRC** | PASS | 0 actual violations (15 helper regions excluded) |
 | **LVS** | PASS | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
 | **Reproducibility** | REPRODUCIBLE | Two runs A&B (Phase 14, historical): 88/88 checks; current baseline 95/95; 20/20 artefacts identical |
 
+**Timing sign convention (SR-10)**: all setup and hold WNS values above are non-negative for a zero-violator PASS. The earlier "FF STA PASS, WNS −0.6159 ns" was a transcription error — `0.6159` is the **TT hold** slack from `reproducibility_r1_vs_r2.json`; FF setup is `+5.7003` ns and FF hold is `+0.3917` ns. A negative setup WNS alongside "PASS / 0 violators" is not a valid claim. The Phase 14 row in the historical table above (FF 5.7656 / hold 0.3319) is from an earlier tool run, retained only as dated history.
+
 **Evidence Location**: `D:\audit\phase14_automated_regression_20261112\evidence\`
 
 ### soc_ctrl — Integrated Second Design
 
-**Status**: ⚙️ Integrated second design; full regression pending execution
+**Status**: ⚙️ Integrated second design; a full physical run exists (`run_pub_m1d_soc_ctrl_full`, 2026-11-17) but **did not qualify** — see the authoritative matrix above. No signoff is claimed.
 
-**Provenance**:
-- RTL source: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` NOT in published tree; only isolated candidate RTL under `examples/soc_ctrl/candidates/`
-- SDC constraints: canonical `soc_ctrl.sdc` NOT in published tree (10 ns intent documented, untracked; no approved config)
+**Provenance** (state at reviewed commit `0a9eb57`; earlier snapshot `27b5d1c` did not track these files):
+- RTL source: canonical `examples/soc_ctrl/rtl/soc_ctrl.v` is **tracked at `0a9eb57`**; isolated candidates remain under `examples/soc_ctrl/candidates/`
+- SDC constraints: canonical `examples/soc_ctrl/rtl/soc_ctrl.sdc` is **tracked at `0a9eb57`**; its exact bytes are pinned by the approved `regression/configs/soc_ctrl_10ns.json`
 - Original gate-level reference: `D:\tools\eda-work\soc_ctrl_stub.v` (OpenROAD EDA test suite)
 - Original SDC reference: `D:\tools\eda-work\soc_ctrl_stub.sdc` (OpenROAD EDA test suite)
 
-**Important**: The Phase 15 soc_ctrl RTL is a synthesizable Verilog adaptation for framework compatibility. It does NOT claim gate-level equivalence with the original `D:\tools\eda-work\soc_ctrl_stub.v`.
+**Important**: The soc_ctrl RTL is a synthesizable Verilog adaptation for framework compatibility. It does NOT claim gate-level equivalence with the original `D:\tools\eda-work\soc_ctrl_stub.v`.
 
 **Design Characteristics**:
 | Property | Value |
@@ -517,7 +601,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 | **Max Transition** | 1.5 |
 | **Max Fanout** | 30 |
 
-**SDC Constraints** (canonical `soc_ctrl.sdc` absent from published tree; 10 ns proposal only):
+**SDC Constraints** (canonical `soc_ctrl.sdc` tracked at `0a9eb57`; 10 ns intent):
 - `create_clock -name clk -period 10.0 [get_ports clk]`
 - `set_input_delay -clock clk 2.0 [all_inputs]`
 - `set_output_delay -clock clk 2.0 [all_outputs]`
@@ -529,38 +613,39 @@ $Resume = $true  # Skip completed stages; only run remaining
 - ✅ Stage scripts design-aware via `$Top = $env:REG_DESIGN`
 - ✅ Design config in `$DesignConfig` hashtable
 - ✅ Separate workspace (`workspace/run_soc_ctrl_*`)
-- ⚠️ Full regression NOT yet executed in this pass (design not chosen for the baseline; test_counter was)
+- ⚠️ The Milestone 1D physical run (`run_pub_m1d_soc_ctrl_full`) executed stages 01–15 with retained failures; no fresh run was performed against `0a9eb57`
 
-**Outstanding Validation** (soc_ctrl stages not executed in this pass):
+**Stage status of the Milestone 1D run (2026-11-17; the older "configured-only" table was superseded by this run):**
 | Stage | Status | Notes |
 |---|---|---|
-| **Synthesis (stage 01)** | ⚙️ Configured | Framework configured, not live-executed |
-| **Generic LEC (stage 02)** | ⚙️ Designed into flow | Not executed |
-| **Technology-mapped LEC (stage 03)** | ⚙️ Designed into flow | Not executed |
-| **Floorplan through Routing (stages 04–10)** | ⚙️ Configured | Not executed |
-| **STA (stages 12–14)** | ⚙️ Configured | Not executed |
-| **GDSII (stage 13)** | ⚙️ Configured | Not executed |
-| **DRC (stage 14)** | ⚙️ Configured | Not executed |
-| **LVS (stage 15)** | ⚙️ Configured | Not executed |
+| **Synthesis / generic LEC / mapped LEC (01–03)** | PASS | Mapped LEC 8/8 partitions, negative control rejected |
+| **Floorplan through detailed route (04–10)** | PASS | Physical implementation stages executed |
+| **Extraction (11)** | PASS | SPEF produced |
+| **STA (12)** | FAIL (retained) | SS setup WNS −2.3378 ns, 3 violated paths; TT/FF clean |
+| **GDSII (13)** | PASS | Generated |
+| **DRC (14)** | PASS | 0 actual violations |
+| **LVS (15)** | FAIL (retained) | Historical secondary comparator then hard-coded `TOP='TEST_COUNTER'` (now fixed, design-independent); official KLayout verdict PASS |
 
 **Distinguishing Local RTL from Upstream Source**:
 | File | Origin | Description |
 |---|---|---|
-| `examples/soc_ctrl/rtl/soc_ctrl.v` | Absent from published 27b5d1c | Untracked in preserved tree only; not present in published repo |
-| `examples/soc_ctrl/rtl/soc_ctrl.sdc` | Absent from published 27b5d1c | Untracked in preserved tree only; not present in published repo |
+| `examples/soc_ctrl/rtl/soc_ctrl.v` | Tracked at reviewed commit `0a9eb57` | Absent from the earlier `27b5d1c` snapshot only |
+| `examples/soc_ctrl/rtl/soc_ctrl.sdc` | Tracked at reviewed commit `0a9eb57` | Absent from the earlier `27b5d1c` snapshot only; exact bytes pinned by `regression/configs/soc_ctrl_10ns.json` |
 | `D:\tools\eda-work\soc_ctrl_stub.v` | Upstream source | Original gate-level netlist from OpenROAD EDA test suite, verified against Nangate Open Cell Library. Gate-level, not RTL. |
 | `D:\tools\eda-work\soc_ctrl_stub.sdc` | Upstream source | Original timing constraints from OpenROAD EDA test suite. |
 
 **soc_ctrl Design Warnings**:
-- **Do NOT claim DRC clean**: Full regression not executed; DRC not live-verified
-- **Do NOT claim LVS clean**: Full regression not executed; LVS not live-verified
-- **Do NOT claim timing signoff**: Full regression not executed; multi-corner STA not live-executed
-- **Do NOT claim GDSII ready**: Full regression not executed; GDSII generation not live-verified
+- **DRC was executed in Milestone 1D with 0 actual violations**, but this is an academic deck check, not signoff; do not claim "qualified DRC clean"
+- **LVS gate FAILED as-run** (historical hard-coded comparator top, since fixed and made design-independent); the official KLayout verdict was PASS, but the as-run stage gate FAIL is retained
+- **Do NOT claim timing signoff**: SS setup is not closed (WNS −2.3378 ns)
+- **GDSII was generated** in Milestone 1D; no signoff geometry verification is claimed
 - **RTL is adaptation, not exact gate-level equivalence**: Framework-created Verilog for flow compatibility
 
-### Technology-Aware Carry Investigation (Phase 18P, soc_ctrl)
+### Historical technology-aware carry investigation — 2026-11-17 (Phase 18P, soc_ctrl)
 
 Phase 18P evaluated two isolated Sky130 HD carry implementations for `soc_ctrl` (technology-aware architecture, explicit mapping/preservation) against the 18K/18L baseline (4 serial `maj3_1` carry stages, 20 cells, ~270.259 µm²; 18L SS WNS -2.3378 ns/TNS -4.0984 ns, 3 violators). No production RTL/SDC modified; no candidate promoted.
+
+**PPA conditions for these numbers**: post-synthesis RTL-to-mapped-cell area from Yosys with the exact RTL/Liberty hashes and scripts recorded in `docs/reviews/M1G_MAPPING_ANALYSIS.md`; 10 ns SDC intent; Sky130 HD `tt_025C_1v80` Liberty (hash in `assistant/pins.json`). They are area/timing estimates, **not** routed-parasitic, power, or signoff PPA; no post-fill or multi-corner routed analysis was run for these candidates.
 
 | Candidate | Approach | Result (measured) |
 |---|---|---|
@@ -618,8 +703,8 @@ vlsi-pd-staff-engineer/
 │   │   ├── rtl/test_counter.sdc
 │   │   └── test_framework.sh
 │   └── soc_ctrl/                          # 4-bit adder controller (Phase 15, NEW)
-# NOTE: canonical rtl/soc_ctrl.v is ABSENT from published 27b5d1c
-# NOTE: canonical rtl/soc_ctrl.sdc is ABSENT from published 27b5d1c
+# NOTE: canonical rtl/soc_ctrl.v tracked at reviewed commit 0a9eb57 (absent only from earlier 27b5d1c)
+# NOTE: canonical rtl/soc_ctrl.sdc tracked at reviewed commit 0a9eb57 (absent only from earlier 27b5d1c)
 ├── run_regression.ps1                     # Primary entry point (-Design parameter)
 ├── checks/                                # Acceptance check logic
 │   ├── acceptance.py
@@ -657,16 +742,16 @@ vlsi-pd-staff-engineer/
 | Limitation | Description | Impact |
 |---|---|---|
 | **Prior shell integration blocker (resolved)** | Previously reported Code Mode shell issue - no longer applies to the documented baseline command path | Live regression, git operations and WSL commands are available in this pass; historical limitation retained for context |
-| **soc_ctrl full regression not executed** | All 15 stages configured but not live-executed | DRC, LVS, multi-corner STA, GDSII generation not verified for soc_ctrl; do NOT claim signoff |
+| **soc_ctrl full regression executed, FAILED QUALIFICATION** | 14/16 stages PASS; STA/LVS failures preserved | Historical run `run_pub_m1d_soc_ctrl_full`; no signoff claim |
 | **KLayout DRC/LVS on Windows** | KLayout 0.30.13 extracted; not runnable (missing Qt5 system libraries) | WSL invocation requires separate approval; DRC/LVS/GDSII blocked from Windows |
 | **Single-corner synthesis** | TT only; SS/FF Liberty present but not used for synthesis | Multi-corner synthesis not performed; explicitly flagged as risk in QoR report |
 | **KLayout DEF→GDSII limitations** | Default `Layout#add_lib` keeps cells as library references; must copy shapes explicitly; must write net names as labels | GDSII requires tech-file reader options and shape-merging steps |
 | **Environment variable path configurations** | Some documentation contains machine-specific `D:\` paths | Local configurations, not universal requirements; do NOT expose as universal installation requirements |
 | **POSIX shell in EQY makefile** | Requires Git for Windows bash.exe alias | `D:\tools\unix-utils\usr\bin\bash.exe` (junction to `C:\Program Files\Git`); bare `shell` commands without alias cause bash interpolation issues |
 
-### What Has Been Demonstrated Through Actual Engineering Runs
+### What has been demonstrated through actual engineering runs — dated record
 
-**Phase 14 test_counter — Fully Verified**:
+**2026-11-12 / 2026-11-16, test_counter — baseline demonstrated (not signoff)**:
 - Two independent runs (A & B) both OVERALL PASS
 - 88/88 acceptance checks passing per run (Phase 14 historical); current baseline 95/95
 - 20/20 artefacts compared: bit-identical
@@ -681,20 +766,22 @@ vlsi-pd-staff-engineer/
 
 **What Remains Incomplete**:
 
-1. **soc_ctrl full regression** — All 15 stages configured but not executed in this pass (baseline design was test_counter)
-2. **DRC/LVS/STA on soc_ctrl** — Full signoff not performed
-3. **GDSII generation on soc_ctrl** — Not verified
-4. **Live regression execution on both designs** - test_counter executed (16/16 stages, twice); soc_ctrl not executed in this pass
+1. **soc_ctrl full regression** — Full run executed in Milestone 1D (`run_pub_m1d_soc_ctrl_full`; 14/16 stages) but FAILED QUALIFICATION; STA/LVS failures retained, no signoff
+2. **DRC/LVS/STA on soc_ctrl** — Foundry signoff not performed; SS setup timing not closed (WNS −2.3378 ns); academic DRC 0 violations and official KLayout LVS verdict PASS are not signoff
+3. **GDSII generation on soc_ctrl** — Generated in Milestone 1D; no signoff geometry verification
+4. **Live regression execution on both designs** — test_counter executed (16/16 stages; `baseline_20261116` / `_r2` and `final_r3` / `final_r4`); soc_ctrl full run executed in Milestone 1D but FAILED QUALIFICATION
 5. **Git operations** - available and used (prior releases published via PRs; this pass is local/uncommitted pending review)
-6. **Remote GitHub publication** - prior releases published via PRs; this pass publishes implementation directly to origin/main
+6. **Remote GitHub publication** - prior releases published via PRs; this pass is local/uncommitted (publication not authorized)
+**GitHub publication** - Authorized publication event is recorded in the external PUBLICATION_REPORT.md; verify `origin/main` after push.
+**GitHub publication** - Authorized publication event is recorded in the external PUBLICATION_REPORT.md; verify `origin/main` after push.
 
 ### Roadmap
 
 1. ~~Shell recovery~~ - DONE: baseline command executes the full regression (see docs/reviews/remediation-report.md)
 2. **test_counter regression** — Execute `run_regression.ps1 -Design test_counter`; verify REPRODUCIBLE baseline
-3. **soc_ctrl regression** — Execute `run_regression.ps1 -Design soc_ctrl`; validate all 15 stages (configuration-only initially)
-4. **DRC/LVS/STA signoff** — Complete signoff on both designs (test_counter verified Phase 14; soc_ctrl pending)
-5. **GitHub publication** — Push verified changes to `RAMA-L7/vlsi-pd-staff-engineer`; independently verify remote state
+3. **soc_ctrl regression** — Full run already executed (`run_pub_m1d_soc_ctrl_full`, Milestone 1D; 14/16 stages, STA/LVS FAIL retained); any re-run must preserve the retained failures and focus on closing SS timing; no signoff claim
+4. **DRC/LVS/STA signoff** — Foundry signoff remains out of scope in this repository; soc_ctrl SS timing must be closed; test_counter Phase 14 results are academic-deck, not qualified signoff
+5. **GitHub publication** - Authorized publication event is recorded in the external PUBLICATION_REPORT.md; verify `origin/main` after push.
 6. **Documentation completion** — Central project status with all phases (1–17); agent/skill integration validation
 7. **Known limitations resolution** — KLayout Windows Qt5 libraries; multi-corner synthesis; single-corner flag
 
@@ -713,20 +800,39 @@ vlsi-pd-staff-engineer/
 
 ### Prerequisites
 
-> **Note**: The recommended entry point is the documented baseline command `python -m assistant baseline` (full provenance captured). `run_regression.ps1` can also be invoked directly.
+> **Note**: Use the project interpreter, not the `python` on PATH (which may be a Microsoft Store alias stub). Supported platform and minimum versions are in `docs/SETUP.md`. Run preflight first, then the documented baseline command.
 
 | Requirement | Path/Command | Notes |
 |---|---|---|
-| **Repository** | `git clone https://github.com/RAMA-L7/vlsi-pd-staff-engineer.git` | Branch: `feature/F-01-claude-agent-discovery` |
+| **Repository** | `git clone https://github.com/RAMA-L7/vlsi-pd-staff-engineer.git` | Branch: `main` |
 | **EDA Tools** | `D:\tools\` directory | Most tools installed; WSL-dependent tools require WSL |
 | **Sky130 PDK** | `D:\tools\pdk\skywater-pdk-complete\` | Functional models, Liberty corners (TT/SS/FF), LEF, GDSII cell library |
 | **KLayout** | `/mnt/d/tools/KLayout/` | Extracted (0.30.13); not runnable from Windows (Qt issues); WSL invocation available |
-| **Python 3** | `D:\tools\venv\` | Virtualenv with yowasp-yosys, yowasp-sby |
+| **Python 3** | `D:\tools\venv\Scripts\python.exe` | Python 3.10.11 minimum; the `python` alias on PATH is a Store stub |
+
+#### Preflight (exact missing dependencies)
+
+```powershell
+# Reports git/python validity (Store stub rejected), optional tool locations,
+# and the override to set for each missing dependency. --require-tool makes a
+# named optional tool mandatory for CI.
+& D:\tools\venv\Scripts\python.exe regression\checks\stage00_preflight.py `
+    regression\project_config.template.json --out-dir <isolated-dir> `
+    --require-tool yosys --require-tool openroad
+# Exit 0 = PASS, 1 = FAIL, 2 = usage. Full details in docs/REGRESSION.md.
+```
+
+#### One documented baseline command
+
+```powershell
+& D:\tools\venv\Scripts\python.exe -m assistant baseline --design test_counter --run-id <ID>
+# --clean reuses a run id in a fresh isolated dir; --no-isolate restores the legacy shared out dir.
+```
 
 ### Configuration (Live Execution Available)
 
 ```powershell
-# Test framework configuration (parameter only; no live execution)
+# Test framework design selection (example commands; see recorded run IDs above)
 powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design test_counter
 # OR
 powershell -ExecutionPolicy Bypass -File run_regression.ps1 -Design soc_ctrl
@@ -764,11 +870,11 @@ This README has been upgraded from a general project introduction into a profess
 - **D**: How the agents work — complete engineering lifecycle with Mermaid flowchart showing PASS/FAIL/BLOCKED/ERROR/INCONCLUSIVE/NOT_TESTED outcomes; explanation of agent-generated instructions vs. actual EDA execution vs. independent verification
 - **E**: Skill architecture — all 10 engineering skills with types, triggers, procedures, expected outputs, acceptance criteria, and links to real skill files
 - **F**: EDA tool integration — comprehensive table with 14 tools, purpose, and accurate integration status (Windows/WSL functional status)
-- **G**: Engineering validation results — 13 historical results from Phase 14 test_counter with correct design attribution; clear distinction from soc_ctrl configured-but-not-executed status
+- **G**: Engineering validation results — 13 historical results from Phase 14 test_counter with correct design attribution; clear distinction from soc_ctrl full-run-executed-but-failed-qualification status
 - **H**: Regression usage — design-aware interface, stage execution, acceptance engine, JSON reports, artifact organization, failure classification; clear labeled distinction between configured and executed
-- **I**: Current supported designs — test_counter (validated baseline, Phase 14 REPRODUCIBLE) and soc_ctrl (integrated, pending execution) with distinct statuses and RTL provenance
+- **I**: Current supported designs — test_counter (validated baseline, Phase 14 REPRODUCIBLE) and soc_ctrl (full run executed, FAILED QUALIFICATION) with distinct statuses and RTL provenance
 - **J**: GitHub project architecture — actual repository directory structure with all agent, skill, example, and documentation paths
-- **K**: Limitations and roadmap - resolved shell blocker, pending soc_ctrl full regression, current single-design physical signoff evidence, what has been demonstrated through actual runs
-- **L**: Quick start — prerequisites and setup with configurable machine-specific paths; no credentials or private environment information exposed
+- **K**: Limitations and roadmap - resolved shell blocker, soc_ctrl full regression executed but failed qualification, no foundry signoff evidence, what has been demonstrated through actual runs
+- **L**: Quick start — prerequisites and setup with configurable machine-specific paths; no credentials or tokens are exposed; host-specific paths are validated-host examples and are parameterized through environment overrides
 
-All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Present-tense "shell blocked" claims have been removed; the Code Mode shell issue is documented only as historical context (Phases 14–17A). The documented baseline command runs today (16/16 stages PASS on test_counter); current run evidence is in `docs/reviews/remediation-report.md` and the post-publication validation record (`docs/reviews/post-publication-validation.md`). Design-specific results are correctly attributed to test_counter (verified execution) vs. soc_ctrl (configured only; not executed in this pass).
+All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Present-tense "shell blocked" claims have been removed; the Code Mode shell issue is documented only as historical context (Phases 14–17A). The documented baseline command runs today (16/16 stages PASS on test_counter; `baseline_20261116` / `_r2`, `final_r3` / `final_r4`); current run evidence is in `docs/reviews/remediation-report.md` and the post-publication validation record (`docs/reviews/post-publication-validation.md`). Design-specific results are correctly attributed to test_counter (verified execution) vs. soc_ctrl (full run executed in Milestone 1D, `run_pub_m1d_soc_ctrl_full`; FAILED QUALIFICATION with STA/LVS failures retained; no signoff).
