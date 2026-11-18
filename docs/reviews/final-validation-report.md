@@ -1,5 +1,8 @@
 # Final Validation Report — Second Review Remediation
 
+**Post-publication update (2026-11-18T17:02:17Z / 2026-11-18T22:32:17+05:30 IST):** the worktree content audited/described below was committed as `45e4251370c39ed27e2ccd6a7a804ed90eaf4472` (tree `00b0418ff4fde3cda377f0175bb92c5b1b32e1ca`) and pushed fast-forward to `origin/main` (verified). SHA values, path counts and "publication not authorized / no commit-push" statements below reflect the state **at the time of that pass** and are retained for traceability; they are not the current publication status. See `docs/reviews/PUBLICATION_REPORT.md`.
+
+
 **Status:** COMPLETE (local, uncommitted) — independent adversarial audit completed: READY for independent review.
 **Reviewed commit:** `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b`
 **Reviewed tree:** `ab0bcf96d00e99a1b1a6cd46f41fde159661791b`

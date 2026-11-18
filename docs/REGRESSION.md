@@ -4,8 +4,8 @@
 
 ### Authoritative status and commands (SR-08 / SR-10)
 
-This checkout is commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b` (tree
-`ab0bcf96d00e99a1b1a6cd46f41fde159661791b`). The single current qualification
+This checkout is published commit `45e4251370c39ed27e2ccd6a7a804ed90eaf4472` (tree
+`00b0418ff4fde3cda377f0175bb92c5b1b32e1ca`). The single current qualification
 matrix is in `README.md` ("Authoritative qualification matrix — this checkout");
 all dated results below are historical context. Recorded baseline runs:
 `baseline_20261116` and `baseline_20261116_r2` (16/16 stages, 95/95 checks) on
@@ -963,7 +963,7 @@ $Resume = $true  # Skip completed stages; only run remaining
 **Not executed in this pass**:
 - soc_ctrl full regression (framework configured; baseline design was test_counter)
 - soc_ctrl DRC/LVS/STA/GDSII (no results claimed)
-- New remote publication in this validation pass (implementation historical published ancestor 6c4a264; current origin/main is 0a9eb57)
+- Remote publication - not executed in this historical validation pass; completed later: `45e4251` pushed fast-forward to `origin/main` and verified (see `docs/reviews/PUBLICATION_REPORT.md`)
 
 **Clear Distinction**:
 - Configured: Framework supported, scripts in place

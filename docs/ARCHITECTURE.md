@@ -681,7 +681,7 @@ JSON Report (schema_version, stage status, per-check results, artifact paths, ha
     ├──────────────────────────────────────────────────────┐
     ↓                                                   ↓
 Cross-Run Comparison (Run A vs Run B)                   GitHub Publication
-(20/20 artefacts identical, GDSII timestamps stripped)   (implementation historical published ancestor 6c4a264; current origin/main is 0a9eb57)
+(20/20 artefacts identical, GDSII timestamps stripped)   (published as `45e4251` to `origin/main`; historical ancestor 6c4a264)
 ```
 
 ### Architecture Principles

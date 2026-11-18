@@ -4,7 +4,7 @@
 
 ## Authoritative qualification matrix — this checkout (SR-10 / SR-08)
 
-The authoritative status for this checkout is the qualification matrix in `README.md`, tied to repository commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b` / tree `ab0bcf96d00e99a1b1a6cd46f41fde159661791b`, with recorded run IDs `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (test_counter: 16/16 stages PASS, 95/95 checks each) and `run_pub_m1d_soc_ctrl_full` (soc_ctrl full physical run: 14/16 stages, retained STA + LVS-gate failures). All phase milestones below are historical context; where they disagree with that matrix, the matrix governs. No fresh 15-stage EDA run was performed against `0a9eb57` in this documentation pass.
+The authoritative status for this checkout is the qualification matrix in `README.md`, tied to published commit `45e4251370c39ed27e2ccd6a7a804ed90eaf4472` / tree `00b0418ff4fde3cda377f0175bb92c5b1b32e1ca` (published 2026-11-18T17:02:17Z / 2026-11-18T22:32:17+05:30 IST; base `0a9eb57` / `ab0bcf96`), with recorded run IDs `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (test_counter: 16/16 stages PASS, 95/95 checks each) and `run_pub_m1d_soc_ctrl_full` (soc_ctrl full physical run: 14/16 stages, retained STA + LVS-gate failures). All phase milestones below are historical context; where they disagree with that matrix, the matrix governs. A fresh baseline was executed at publication; see `docs/reviews/PUBLICATION_REPORT.md`.
 
 **Current baseline setup WNS (SR-10; `baseline_20261116` / `_r2`):** FF `+5.7003` ns, SS `+2.6745` ns, TT `+5.4550` ns, all with 0 violators. The value `−0.6159` is **not** a setup WNS: it was a transcription error in an older `DESIGN.md` draft (it is the TT **hold** slack from `reproducibility_r1_vs_r2.json`). A negative setup WNS alongside "PASS / 0 violators" is not a valid claim. No soc_ctrl setup signoff is claimed — its full run retained an SS setup failure (WNS −2.3378 ns, 3 violated paths).
 
@@ -170,12 +170,12 @@ This document summarizes the engineering milestones achieved across Phases 1 thr
 
 #### Current Execution Status
 - **Shell tool**: functional for the documented baseline command path (the reported Code Mode issue is a historical Phase 14–17A record)
-- **Live regression execution**: test_counter baseline executed (`baseline_20261116` / `_r2`) — 16/16 stages PASS, 95 checks (92 stage + 3 manifest), reproduced twice; soc_ctrl full physical run executed in Milestone 1D (`run_pub_m1d_soc_ctrl_full`; 14/16 stages, STA/LVS FAIL retained), no fresh run against `0a9eb57`
-- **Git operations**: available (local validation edits uncommitted; implementation historical published ancestor 6c4a264; current origin/main is 0a9eb57)
+- **Live regression execution**: test_counter baseline executed (`baseline_20261116` / `_r2`) — 16/16 stages PASS, 95 checks (92 stage + 3 manifest), reproduced twice; soc_ctrl full physical run executed in Milestone 1D (`run_pub_m1d_soc_ctrl_full`; 14/16 stages, STA/LVS FAIL retained), fresh publication baseline executed (`pubfinal20261118`, 16/16 PASS)
+- **Git operations**: available and used; qualified content committed and pushed as `45e4251`, `origin/main` verified
 - **DRC/LVS/STA verification**: executed for test_counter as baseline stages (results in `docs/reviews/post-publication-validation.md`)
 - **GDSII generation**: executed for test_counter as a baseline stage
 - **Negative test suite**: framework script passes 47/0/0; unit and failure-injection suites pass
-- **Remote GitHub publication**: historical published ancestor 6c4a264; current origin/main 0a9eb57; no new publication in this validation pass
+- **Remote GitHub publication**: COMPLETE - `45e4251` pushed fast-forward to `origin/main` and verified (see `docs/reviews/PUBLICATION_REPORT.md`)
 
 ### 🔍 Shell Execution Blocker — Historical Disclosure (Phases 14–17A)
 

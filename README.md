@@ -12,7 +12,7 @@ This repository provides a deterministic, scripted RTL-to-GDSII physical-design 
 
 ## Authoritative qualification matrix — this checkout (SR-10 / SR-08)
 
-**Exact identity:** repository commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b`, tree `ab0bcf96d00e99a1b1a6cd46f41fde159661791b` (second-review baseline). **Recorded baseline run IDs:** `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (16/16 stages PASS, 95/95 checks each; the `baseline_20261116` pair is byte-identical on mapped/generic netlists and GDSII geometry after timestamp stripping). The `baseline_20261116*` runs were executed on historical published ancestor commit `6c4a2640b95e869fe3f0c1367dca5aaf9626f3fc`; current `origin/main` before this publication is `0a9eb57`; `final_r3`/`final_r4` evidence is in `D:\audit\second_review_evidence_20261118\`. No fresh 15-stage EDA run was performed against `0a9eb57` in this documentation/reproducibility pass. Evidence: `D:\audit\pd_assistant_evidence_20261116\`; parameters in `docs/reviews/remediation-report.md:86-108`.
+**Exact identity:** published commit `45e4251370c39ed27e2ccd6a7a804ed90eaf4472`, tree `00b0418ff4fde3cda377f0175bb92c5b1b32e1ca` (published 2026-11-18T17:02:17Z / 2026-11-18T22:32:17+05:30 IST; evolved from base `0a9eb57` / tree `ab0bcf96`, whose engineering content is unchanged). **Recorded baseline run IDs:** `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (16/16 stages PASS, 95/95 checks each; the `baseline_20261116` pair is byte-identical on mapped/generic netlists and GDSII geometry after timestamp stripping). The `baseline_20261116*` runs were executed on historical published ancestor commit `6c4a2640b95e869fe3f0c1367dca5aaf9626f3fc`; current published `origin/main` is `45e4251` (this commit); `final_r3`/`final_r4` evidence is in `D:\audit\second_review_evidence_20261118\`. A fresh baseline was executed at publication against this exact content (run `pubfinal20261118`, 16/16 stages PASS); see `docs/reviews/PUBLICATION_REPORT.md`. Evidence: `D:\audit\pd_assistant_evidence_20261116\`; parameters in `docs/reviews/remediation-report.md:86-108`.
 
 | Check | Status | Evidence (commit / run ID) | Conditions / limits |
 |---|---|---|---|
@@ -23,13 +23,13 @@ This repository provides a deterministic, scripted RTL-to-GDSII physical-design 
 | `soc_ctrl` full physical flow | **FAILED QUALIFICATION** (retained failure) | Milestone 1D / `run_pub_m1d_soc_ctrl_full` | 14/16 stages; SS setup WNS historical −2.3378 ns / 3 violators; current best routed maj3_2 WNS −0.852429 ns, TNS −0.920336 ns, 2 violators (both FAIL); stage-15 gate FAIL in the historical run (secondary comparator then hard-coded `TOP='TEST_COUNTER'`; that comparator is now design-independent and official KLayout verdict is PASS). No signoff claim. |
 | Macro-based example | **NO-MACROS / NOT APPLICABLE** | `python -m assistant info` (`NA-RULE:NO-MACROS`) | No macro/abstract placement flow is implemented; supported examples are standard-cell only. |
 | IR drop / EM / antenna / UPF / post-fill extraction | **UNSUPPORTED** | `assistant/baseline.py::UNSUPPORTED_CAPABILITIES` | No executable stage exists; do not claim. |
-| Automated regression, tool/PDK/deck provenance pins, preflight | **SUPPORTED** (script exists) | this commit `0a9eb57`; `assistant/pins.json`, `regression/checks/stage00_preflight.py` | Supported ≠ demonstrated on a fresh run of this exact commit; pins record the developer-host snapshot. |
+| Automated regression, tool/PDK/deck provenance pins, preflight | **SUPPORTED** (script exists) | published commit `45e4251`; `assistant/pins.json`, `regression/checks/stage00_preflight.py` | Demonstrated on a fresh run of this exact content (committed as `45e4251`); pins record the developer-host snapshot. |
 
 **Reading the matrix:** "DEMONSTRATED" = a recorded run produced fresh tool evidence; "SUPPORTED" = deterministic script/config exists; "UNSUPPORTED" / "NO-MACROS" = no executable stage; "FAILED QUALIFICATION" = real failure retained, not suppressed. Historical Phase 14–18 results below are dated and superseded by this matrix wherever they disagree.
 
 **Portability caveat:** pins and the supported setup describe one validated developer host. They do **not** establish independent portability or signoff on another machine; re-probe and report drift there.
 
-## Publication status and current verification (2026-11-18)
+## Publication COMPLETE and current verification (2026-11-18)
 
 **Final independent verdict:** **READY WITH LIMITATIONS** for external evaluation of the supervised academic PD workflow. This is not foundry signoff, not soc_ctrl timing closure, not autonomous RTL-to-GDSII and not tapeout readiness. Full report: `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`.
 
@@ -46,11 +46,11 @@ This repository provides a deterministic, scripted RTL-to-GDSII physical-design 
 | Other hosts | **NOT_TESTED** | Reproducibility verified on the validated host only; portable overrides are documented but not cross-host proven |
 | Macro example | **NOT_APPLICABLE** | `NA-RULE:NO-MACROS`; no macro/abstract view flow implemented |
 
-**Key reports:** `docs/reviews/second-review.md`, `docs/reviews/final-validation-report.md`, `docs/reviews/NEXT_PHASE_TECHNICAL_REPORT.md`, `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`, `docs/reviews/MILESTONE_1G_TECHNICAL_REVIEW.md`, `docs/research/STUDY_STATUS.md`.
+**Key reports:** `docs/reviews/second-review.md`, `docs/reviews/final-validation-report.md`, `docs/reviews/NEXT_PHASE_TECHNICAL_REPORT.md`, `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`, `docs/reviews/MILESTONE_1G_TECHNICAL_REVIEW.md`, `docs/research/STUDY_STATUS.md`, `docs/reviews/PUBLICATION_REPORT.md`, `docs/reviews/PUBLICATION_MANIFEST.md`.
 
 **Setup / reproduction:** use `docs/SETUP.md` (supported platform, minimum versions, environment overrides and one documented baseline command). Host-specific `D:\` paths shown elsewhere are validated-host examples, not private configuration or portable requirements.
 
-**Publication event:** authorized by the project owner; commit SHA, push result and file manifest are recorded in the external `PUBLICATION_REPORT.md` under the validated-host evidence root.
+**Publication event: COMPLETE.** Authorized by the project owner; commit `45e4251` (tree `00b0418`) was pushed fast-forward to `origin/main` and verified at 2026-11-18T17:02:17Z / 2026-11-18T22:32:17+05:30 IST. Record: `docs/reviews/PUBLICATION_REPORT.md`; file manifest: `docs/reviews/PUBLICATION_MANIFEST.md`; external evidence: `D:\audit\publication_evidence_20261118\`.
 
 ---
 
@@ -770,10 +770,9 @@ vlsi-pd-staff-engineer/
 2. **DRC/LVS/STA on soc_ctrl** — Foundry signoff not performed; SS setup timing not closed (WNS −2.3378 ns); academic DRC 0 violations and official KLayout LVS verdict PASS are not signoff
 3. **GDSII generation on soc_ctrl** — Generated in Milestone 1D; no signoff geometry verification
 4. **Live regression execution on both designs** — test_counter executed (16/16 stages; `baseline_20261116` / `_r2` and `final_r3` / `final_r4`); soc_ctrl full run executed in Milestone 1D but FAILED QUALIFICATION
-5. **Git operations** - available and used (prior releases published via PRs; this pass is local/uncommitted pending review)
-6. **Remote GitHub publication** - prior releases published via PRs; this pass is local/uncommitted (publication not authorized)
-**GitHub publication** - Authorized publication event is recorded in the external PUBLICATION_REPORT.md; verify `origin/main` after push.
-**GitHub publication** - Authorized publication event is recorded in the external PUBLICATION_REPORT.md; verify `origin/main` after push.
+5. **Git operations** - available and used; qualified content committed and pushed as `45e4251`
+6. **Remote GitHub publication** - COMPLETE: `45e4251` pushed fast-forward to `origin/main` and verified
+**GitHub publication** - COMPLETE and verified; see `docs/reviews/PUBLICATION_REPORT.md` (external evidence: `D:\audit\publication_evidence_20261118\`).
 
 ### Roadmap
 

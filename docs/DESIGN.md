@@ -4,7 +4,7 @@
 
 ## Authoritative qualification matrix — this checkout (SR-10 / SR-08)
 
-The authoritative status for this checkout is the qualification matrix in `README.md`, tied to repository commit `0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b` / tree `ab0bcf96d00e99a1b1a6cd46f41fde159661791b`, with recorded run IDs `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (test_counter: 16/16 stages PASS, 95/95 checks each) and `run_pub_m1d_soc_ctrl_full` (soc_ctrl full physical run: 14/16 stages, retained STA + LVS-gate failures). This document is historical context; where it disagrees with that matrix, the matrix governs. No fresh 15-stage EDA run was performed against `0a9eb57` in this documentation pass.
+The authoritative status for this checkout is the qualification matrix in `README.md`, tied to published commit `45e4251370c39ed27e2ccd6a7a804ed90eaf4472` / tree `00b0418ff4fde3cda377f0175bb92c5b1b32e1ca` (published 2026-11-18T17:02:17Z / 2026-11-18T22:32:17+05:30 IST; base `0a9eb57` / `ab0bcf96`), with recorded run IDs `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (test_counter: 16/16 stages PASS, 95/95 checks each) and `run_pub_m1d_soc_ctrl_full` (soc_ctrl full physical run: 14/16 stages, retained STA + LVS-gate failures). This document is historical context; where it disagrees with that matrix, the matrix governs. A fresh baseline was executed at publication and is recorded in `docs/reviews/PUBLICATION_REPORT.md`.
 
 **Unsupported capabilities (do not claim):** IR drop, EM, antenna checking, UPF / low-power intent closure, post-fill extraction / timing closure, and signoff / tapeout readiness. See `README.md` ("NOT implemented in this repository") and `assistant/baseline.py::UNSUPPORTED_CAPABILITIES`.
 

@@ -14,7 +14,7 @@ This directory contains the Phase 14 RTL-to-GDSII regression framework integrate
 ## Status (authoritative matrix in root README.md)
 
 The single current qualification matrix is `README.md` → "Authoritative
-qualification matrix — this checkout" (commit `0a9eb57e…`, tree `ab0bcf96…`).
+qualification matrix — this checkout" (published commit `45e4251…`, tree `00b0418f…`; base `0a9eb57`).
 It supersedes the snapshot below, which is retained as **dated history**.
 
 - **Integration**: complete (framework copied/adapted, design-aware generalizations applied).
