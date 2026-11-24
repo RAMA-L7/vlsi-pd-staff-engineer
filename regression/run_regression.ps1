@@ -65,7 +65,14 @@ param(
   [switch]$NegativeTest,
   [string]$Design = 'test_counter',
   [string]$RtlOverride = '',
-  [string]$SdcOverride = ''
+  [string]$SdcOverride = '',
+  # TR-04 test seams. Defaults preserve the production control flow exactly.
+  [string]$WslDistro = 'Ubuntu-24.04',
+  [string]$EvidenceDirOverride = '',
+  [string]$StageExecutor = '',
+  [string]$AcceptanceExecutor = '',
+  [string]$ManifestExecutor = '',
+  [switch]$SkipToolProbe
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,7 +83,7 @@ $Root        = Split-Path -Parent $MyInvocation.MyCommand.Path
 $StageDir    = Join-Path $Root 'stages'
 $CheckDir    = Join-Path $Root 'checks'
 $NegDir      = Join-Path $Root 'negative'
-$EvidenceDir = Join-Path $Root 'evidence'
+$EvidenceDir = if ($EvidenceDirOverride) { $EvidenceDirOverride } else { Join-Path $Root 'evidence' }
 if (-not $Workspace) { $Workspace = Join-Path $Root 'workspace' }
 New-Item -ItemType Directory -Force -Path $Workspace, $EvidenceDir | Out-Null
 
@@ -343,6 +350,34 @@ function Get-Sha256Text([string]$text) {
     [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).Replace('-','').ToLower()
 }
 
+# F-26: defence in depth for acceptance provenance.  When a provider emits
+# run_id/design (top level or per check) they MUST match this invocation.  When
+# it emits neither, freshness is still verified by the caller, which deletes
+# every stale acceptance file before invoking the provider.  Mismatches fail
+# closed: they downgrade qualification and block all consumers / the verdict.
+function Test-AcceptanceBinding($doc) {
+  $reasons = @()
+  $expected = @{ run_id = $RunId; design = $Design }
+  foreach ($field in @('run_id','design')) {
+    $prop = $doc.PSObject.Properties[$field]
+    if ($null -ne $prop -and $null -ne $prop.Value -and "$($prop.Value)" -ne '') {
+      if ("$($prop.Value)" -ne "$($expected[$field])") {
+        $reasons += "acceptance $field '$($prop.Value)' does not match this run ('$($expected[$field])')"
+      }
+    }
+  }
+  foreach ($c in @($doc.checks)) {
+    foreach ($field in @('run_id','design')) {
+      $prop = $c.PSObject.Properties[$field]
+      if ($null -ne $prop -and $null -ne $prop.Value -and "$($prop.Value)" -ne '' -and
+          "$($prop.Value)" -ne "$($expected[$field])") {
+        $reasons += "check $($c.name) $field '$($prop.Value)' does not match this run ('$($expected[$field])')"
+      }
+    }
+  }
+  return @{ ok = ($reasons.Count -eq 0); reasons = $reasons }
+}
+
 function Get-TransitiveDeps([string]$name) {
   # Iterative: a nested function would shadow $out in its own scope.
   $out = @()
@@ -456,26 +491,31 @@ foreach ($f in $inputFiles) {
 # --------------------------------------------------------------------------- tool versions
 $toolProbe = [ordered]@{
   yosys        = "cmd /c `"call `"$Oss\environment.bat`" >nul 2>&1 && `"$YosysWin`" -V`""
-  openroad    = "wsl -d Ubuntu-24.04 -- /usr/local/bin/openroad -version"
-  opensta     = "wsl -d Ubuntu-24.04 -- /mnt/d/tools/src/OpenSTA/build/sta -version"
-  klayout     = "wsl -d Ubuntu-24.04 -- /mnt/d/tools/KLayout/bin/klayout.sh -v"
+  openroad    = "wsl -d $WslDistro -- /usr/local/bin/openroad -version"
+  opensta     = "wsl -d $WslDistro -- /mnt/d/tools/src/OpenSTA/build/sta -version"
+  klayout     = "wsl -d $WslDistro -- /mnt/d/tools/KLayout/bin/klayout.sh -v"
   python      = "& `"$Python`" --version"
   eqy         = "cmd /c `"call `"$Oss\environment.bat`" >nul 2>&1 && `"$Oss\bin\eqy.exe`" --help`""
   make        = "cmd /c `"where make`""
-  wsl_bash    = "wsl -d Ubuntu-24.04 -- bash --version"
+  wsl_bash    = "wsl -d $WslDistro -- bash --version"
 }
-foreach ($k in $toolProbe.Keys) {
-  $v = ''
-  try {
-    $v = ((Invoke-Expression $toolProbe[$k] 2>&1 | Select-Object -First 4) -join ' | ').Trim()
-  } catch { $v = 'ERROR: ' + $_.Exception.Message }
-  if (-not $v) { $v = 'no output' }
-  $report.tools[$k] = $v
+if ($SkipToolProbe) {
+  foreach ($k in $toolProbe.Keys) { $report.tools[$k] = 'SIMULATED: tool probe skipped' }
+} else {
+  foreach ($k in $toolProbe.Keys) {
+    $v = ''
+    try {
+      $v = ((Invoke-Expression $toolProbe[$k] 2>&1 | Select-Object -First 4) -join ' | ').Trim()
+    } catch { $v = 'ERROR: ' + $_.Exception.Message }
+    if (-not $v) { $v = 'no output' }
+    $report.tools[$k] = $v
+  }
 }
 
 # --------------------------------------------------------------------------- PDK revisions
 $pdkRoot = if ($env:REG_PDK_COMPLETE_ROOT) { $env:REG_PDK_COMPLETE_ROOT } else { 'D:\tools\pdk\skywater-pdk-complete' }
-if (Test-Path $pdkRoot) {
+if ($SkipToolProbe) { $report.pdk_revisions['SIMULATED'] = 'tool probe skipped' }
+elseif (Test-Path $pdkRoot) {
   foreach ($d in (Get-ChildItem $pdkRoot -Directory)) {
     $r = (& git -C $d.FullName rev-parse HEAD 2>$null)
     $report.pdk_revisions[$d.Name] = if ($r) { $r.Trim() } else { 'unknown' }
@@ -581,10 +621,14 @@ if ($Resume -and $invalidated.Count -gt 0) {
 
 function Test-StagePrereqs([string]$name, $doneMap) {
   $reasons = @()
+  # F-14: ValidateOnly revalidates with VALIDATION_PASS instead of QUALIFIED_PASS.
+  # Accept that verdict ONLY in ValidateOnly mode; normal production runs still
+  # require QUALIFIED_PASS, so no production gate is weakened.
+  $allowedQual = if ($ValidateOnly) { @('QUALIFIED_PASS','VALIDATION_PASS') } else { @('QUALIFIED_PASS') }
   foreach ($d in (Get-TransitiveDeps $name)) {
     if ($doneMap.ContainsKey($d)) {
       $dr = $doneMap[$d]
-      if ($dr.qualification_status -ne 'QUALIFIED_PASS' -or
+      if ($dr.qualification_status -notin $allowedQual -or
           $dr.process_status -notin @('COMPLETED','VALIDATION_ONLY') -or
           -not $dr.evidence_persisted) {
         $reasons += "dependency $d has no fresh authoritative acceptance"
@@ -593,6 +637,11 @@ function Test-StagePrereqs([string]$name, $doneMap) {
       # Partial-stage run: dependency must have valid prior evidence.
       if ($Resume) {
         $rv = Test-StageResumeValid $d
+        # F-15: an invalidated dependency (or any of its ancestors) has stale
+        # evidence even if its own ledger entry happens to look valid.
+        if ($invalidated.ContainsKey($d)) {
+          $rv = @{ ok = $false; reasons = @(@($rv.reasons + @($invalidated[$d])) | Select-Object -Unique) }
+        }
         if (-not $rv.ok) { $reasons += "dependency $d has no valid prior evidence: $($rv.reasons -join '; ')" }
       } else {
         $reasons += "dependency $d not executed in this run (partial-stage run requires prerequisites)"
@@ -608,7 +657,11 @@ $RunManifest = Join-Path $RunDir 'run_manifest.json'
 function Invoke-Manifest([string[]]$margs) {
   if (-not (Test-Path $ManifestMgr)) { return $null }
   try {
-    $out = & $Python $ManifestMgr @margs 2>&1
+    if ($ManifestExecutor) {
+      $out = & $ManifestExecutor @margs 2>&1
+    } else {
+      $out = & $Python $ManifestMgr @margs 2>&1
+    }
     return @{ rc = $LASTEXITCODE; out = ($out -join "`n") }
   } catch {
     return @{ rc = 99; out = $_.Exception.Message }
@@ -657,6 +710,12 @@ $persistFailures = @()
 $blockedRemaining = $false
 $accJson = Join-Path $RunDir 'acceptance.json'
 $accTxt = Join-Path $RunDir 'acceptance.txt'
+# F-25: a final acceptance.json left by a previous run must never be reused.
+# Per-stage acceptance files are deleted inside the loop; do the same for the
+# final snapshot up front so any final file present at the end was written by
+# THIS invocation.
+Remove-Item $accJson -Force -ErrorAction SilentlyContinue
+Remove-Item $accTxt -Force -ErrorAction SilentlyContinue
 $statusTarget = if ($ValidateOnly) { Join-Path $RunDir 'validation_status.json' } else { $statusFile }
 if ($ValidateOnly) { $status = [ordered]@{ stages = @() } }
 
@@ -706,6 +765,12 @@ foreach ($name in $order) {
     Write-Host "--------- stage $name : VALIDATE ONLY (fresh checks, no execution)"
   } elseif ($Resume) {
     $rv = Test-StageResumeValid $name
+    # F-15: $invalidated already contains this stage whenever it OR any ancestor
+    # failed revalidation.  Consume it here instead of merely printing it, so
+    # stale ledger/evidence can never be reused for an invalidated descendant.
+    if ($invalidated.ContainsKey($name)) {
+      $rv = @{ ok = $false; reasons = @(@($rv.reasons + @($invalidated[$name])) | Select-Object -Unique) }
+    }
     if ($rv.ok) {
       $skip = $true
       $result.skipped = $true
@@ -732,6 +797,12 @@ foreach ($name in $order) {
     $rc = 1
     $domain = ''
     try {
+      if ($StageExecutor) {
+        # TR-04: injected fake tool executable; the SR-02 loop below is unchanged.
+        & $StageExecutor $name $s.Kind $logWsl
+        $rc = $LASTEXITCODE
+        $domain = if ($s.Kind -eq 'win') { 'windows' } else { 'wsl' }
+      } else {
       switch ($s.Kind) {
         'win' {
           $domain = 'windows'
@@ -744,17 +815,18 @@ foreach ($name in $order) {
           $domain = 'wsl'
           $scriptWsl = ConvertTo-WslPath (Join-Path $StageDir $s.File)
           $cmd = "source '$envWslWslPath' && bash '$scriptWsl' > '$logWsl' 2>&1"
-          & wsl.exe -d Ubuntu-24.04 -- bash -c $cmd
+          & wsl.exe -d $WslDistro -- bash -c $cmd
           $rc = $LASTEXITCODE
         }
         'wsl-or' {
           $domain = 'wsl'
           $scriptWsl = ConvertTo-WslPath (Join-Path $StageDir $s.File)
           $cmd = "source '$envWslWslPath' && /usr/local/bin/openroad -no_init -exit '$scriptWsl' > '$logWsl' 2>&1"
-          & wsl.exe -d Ubuntu-24.04 -- bash -c $cmd
+          & wsl.exe -d $WslDistro -- bash -c $cmd
           $rc = $LASTEXITCODE
         }
         default { throw "unknown stage kind '$($s.Kind)'" }
+      }
       }
     } catch {
       ($_ | Out-String) | Out-File -FilePath $logWsl -Append
@@ -779,19 +851,26 @@ foreach ($name in $order) {
   $stageAccTxt = Join-Path $RunDir "acceptance_${name}.txt"
   Remove-Item $stageAccJson -Force -ErrorAction SilentlyContinue
   Remove-Item $stageAccTxt -Force -ErrorAction SilentlyContinue
-  $accCmd = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' --out '$runWsl/acceptance_${name}.json' > '$runWsl/acceptance_${name}.txt' 2>&1"
-  & wsl.exe -d Ubuntu-24.04 -- bash -c $accCmd
-  $stageAccRc = $LASTEXITCODE
+  if ($AcceptanceExecutor) {
+    & $AcceptanceExecutor $name $stageAccJson
+    $stageAccRc = $LASTEXITCODE
+  } else {
+    $accCmd = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' --out '$runWsl/acceptance_${name}.json' > '$runWsl/acceptance_${name}.txt' 2>&1"
+    & wsl.exe -d $WslDistro -- bash -c $accCmd
+    $stageAccRc = $LASTEXITCODE
+  }
   if (Test-Path $stageAccTxt) { Get-Content $stageAccTxt | ForEach-Object { Write-Host "    $_" } }
 
   $stageChecks = @()
   $accEvidenceOk = $false
+  $accBinding = @{ ok = $true; reasons = @() }
   if (Test-Path $stageAccJson) {
     try {
       $parsed = Get-Content $stageAccJson -Raw | ConvertFrom-Json
       $stageChecks = @($parsed.checks)
       $accEvidenceOk = ($stageChecks.Count -gt 0)
-    } catch { $accEvidenceOk = $false }
+      if ($accEvidenceOk) { $accBinding = Test-AcceptanceBinding $parsed }
+    } catch { $accEvidenceOk = $false; $accBinding = @{ ok = $false; reasons = @('acceptance document unreadable') } }
   }
   if (-not $accEvidenceOk) {
     $persistFailures += "stage ${name}: fresh acceptance evidence not persisted/readable (rc=$stageAccRc)"
@@ -831,6 +910,11 @@ foreach ($name in $order) {
   try { Write-Json $status $statusTarget; if (-not (Test-Path $statusTarget)) { $evOk = $false } }
   catch { $evOk = $false }
   if (-not $accEvidenceOk) { $evOk = $false }
+  if (-not $accBinding.ok) {
+    # F-26: a cross-run/cross-design acceptance document is not authoritative.
+    $evOk = $false
+    $persistFailures += "stage ${name}: acceptance run/design binding failure: $($accBinding.reasons -join '; ')"
+  }
 
   if (-not $ValidateOnly -and (Test-Path $ManifestMgr)) {
     try {
@@ -951,10 +1035,53 @@ $report.artifacts = $manifest
 # --------------------------------------------------------------------------- final fresh full acceptance
 # A fresh global acceptance run is the authoritative evidence snapshot.  It is
 # produced even in ValidateOnly mode (the previous code skipped it entirely).
-$accCmdFull = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' > '$runWsl/acceptance.txt' 2>&1"
-& wsl.exe -d Ubuntu-24.04 -- bash -c $accCmdFull
-$fullAccRc = $LASTEXITCODE
-if (-not (Test-Path $accJson)) { $persistFailures += 'final acceptance.json not persisted' }
+# F-25/F-26: delete any final file written earlier in this run as well, so the
+# snapshot parsed below is provably the output of the final invocation.
+Remove-Item $accJson -Force -ErrorAction SilentlyContinue
+Remove-Item $accTxt -Force -ErrorAction SilentlyContinue
+if ($AcceptanceExecutor) {
+  & $AcceptanceExecutor '__final__' $accJson
+  $fullAccRc = $LASTEXITCODE
+} else {
+  $accCmdFull = "source '$envWslWslPath' && python3 '$checkWsl/acceptance.py' '$runWsl' '$runWsl/logs' > '$runWsl/acceptance.txt' 2>&1"
+  & wsl.exe -d $WslDistro -- bash -c $accCmdFull
+  $fullAccRc = $LASTEXITCODE
+}
+
+# The final document is authoritative: parse it, not just its exit code.
+$finalChecks = @()
+$finalAccOk = $false
+$finalBinding = @{ ok = $true; reasons = @() }
+$finalFailMsgs = @()
+if (Test-Path $accJson) {
+  try {
+    $finalParsed = Get-Content $accJson -Raw | ConvertFrom-Json
+    $finalChecks = @($finalParsed.checks)
+    $finalAccOk = ($finalChecks.Count -gt 0)
+    if ($finalAccOk) { $finalBinding = Test-AcceptanceBinding $finalParsed }
+  } catch { $finalAccOk = $false }
+}
+if (-not $finalAccOk) {
+  $persistFailures += "final acceptance.json not persisted/readable/empty (rc=$fullAccRc)"
+} else {
+  if (-not $finalBinding.ok) {
+    $persistFailures += "final acceptance run/design binding failure: $($finalBinding.reasons -join '; ')"
+  }
+  # Any FAIL / INCONCLUSIVE / NOT_TESTED check anywhere in the final snapshot
+  # blocks PASS, including checks outside the mandatory per-stage set.
+  foreach ($c in $finalChecks) {
+    if ($c.status -in @('FAIL','INCONCLUSIVE','NOT_TESTED')) {
+      $finalFailMsgs += "final acceptance: $($c.stage)/$($c.name) = $($c.status)"
+    }
+  }
+  # A mandatory check that is absent from the final snapshot is unverifiable.
+  foreach ($n in $Mandatory) {
+    $finalNames = @($finalChecks | Where-Object { $_.stage -eq $n } | ForEach-Object { $_.name })
+    foreach ($rn in @($RequiredChecks[$n])) {
+      if ($finalNames -notcontains $rn) { $finalFailMsgs += "final acceptance: missing required check $n/$rn" }
+    }
+  }
+}
 
 # --------------------------------------------------------------------------- manifest finalize (status must be truthful)
 $allQualified = ($stageResults.Count -eq $Mandatory.Count) -and
@@ -975,6 +1102,7 @@ $notPass = @($stageResults | Where-Object { $_.engineering_status -ne 'PASS' })
 $anyFail = @($stageResults | Where-Object { $_.engineering_status -eq 'FAIL' })
 $report.not_executed = $missing
 $report.evidence_persistence_failures = $persistFailures
+$report.final_acceptance_failures = $finalFailMsgs
 
 $failMsgs = @()
 foreach ($sr in $stageResults) {
@@ -985,9 +1113,14 @@ foreach ($sr in $stageResults) {
   foreach ($r in @($sr.block_reasons)) { $failMsgs += "$($sr.name): BLOCKED - $r" }
 }
 foreach ($p in $persistFailures) { $failMsgs += "evidence persistence: $p" }
+foreach ($m in $finalFailMsgs) { $failMsgs += $m }
 $report.failure_messages = $failMsgs
 
-$clean = ($missing.Count -eq 0 -and $notPass.Count -eq 0 -and $persistFailures.Count -eq 0 -and $fullAccRc -eq 0)
+# F-25: per-check statuses from the fresh final acceptance are part of the
+# verdict contract - a FAIL/INCONCLUSIVE/NOT_TESTED or missing check blocks PASS
+# even when the provider exits zero.
+$clean = ($missing.Count -eq 0 -and $notPass.Count -eq 0 -and $persistFailures.Count -eq 0 -and
+          $fullAccRc -eq 0 -and $finalFailMsgs.Count -eq 0)
 if ($ValidateOnly) {
   $report.process_completion = 'NOT_RUN_VALIDATION_ONLY'
 } elseif ($missing.Count -gt 0) {
@@ -1064,6 +1197,7 @@ foreach ($sr in $stageResults) {
   }
 }
 foreach ($m in $failMsgs) { if ($m -notmatch '/') { $anyFail = $true; $md += "- $m" } }
+foreach ($m in $finalFailMsgs) { $anyFail = $true; $md += "- $m" }
 if (-not $anyFail) { $md += '- none' }
 $md += ''
 $md += '## Tool versions'

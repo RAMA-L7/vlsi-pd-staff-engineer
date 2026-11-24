@@ -5,6 +5,12 @@ This is the **supported setup path** for the deterministic regression. The
 preserved at the end as historical context; they describe repository creation,
 not how to run the regression.
 
+> **Third-review reproduction (2026-11-19):** unit + simulated + real-runner-with-
+> simulated-tools tests: `python -m pytest -q` (353 passed). Real EDA: run the documented
+> baseline twice in fresh isolated output directories and compare with
+> `regression/checks/compare_runs.py`; see `docs/reviews/third-review-validation.md` and the
+> portable `REVIEW_PACKAGE` described there. Other hosts remain NOT_TESTED.
+
 ## 1. Supported platform (explicit)
 
 The pins in `assistant/pins.json` were recorded on one validated developer host.

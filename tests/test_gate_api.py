@@ -6,12 +6,14 @@ exercises one newly fixed behaviour of ``assistant.controller``.
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 
 import pytest
 
 import assistant.controller as ctrl
 from assistant.controller import (
+    APPLICABILITY_RULES,
     ApplicabilityError,
     CheckSpec,
     GateController,
@@ -96,6 +98,33 @@ def _pass_ev(check="sta", **kw):
     kw.setdefault("exit_code", 0)
     kw.setdefault("analysis_view", "ROUTED_EXTRACTED")
     return Evidence.from_run(check_id=check, status=Status.PASS, **kw)
+
+
+def _genuine_pass(controller, tmp_path, check="sta", **kw):
+    """Record an authoritative PASS with complete strict provenance.
+
+    Unlike :func:`_sim`, no ``simulated`` label is used, so the record's
+    ``evidence_class`` stays TOOL and the gate can report a genuine CLEAN_PASS.
+    """
+    rpt = tmp_path / f"{check}.rpt"
+    rpt.write_text("slack 0.10 ns", encoding="utf-8")
+    kw.setdefault("reason", "meets target")
+    kw.setdefault("exit_code", 0)
+    kw.setdefault("analysis_view", "ROUTED_EXTRACTED")
+    kw.setdefault("command", [check])
+    kw.setdefault("tool_versions", {check: "1.0"})
+    kw.setdefault("reports", [str(rpt)])
+    _ev = Evidence.from_run(check_id=check, status=Status.PASS, **kw)
+    # R6.2: attach a REAL TRUSTED proof so the gate keeps its security purpose.
+    try:
+        import r62_proof_helper as _ph
+        _d, _cmd = _ph.proof_and_command()
+        if _d is not None:
+            _ev.execution_proof = _d
+            object.__setattr__(_ev, "command", list(_cmd))
+    except Exception:
+        pass
+    return controller.record_evidence(_ev)
 
 
 def _fail_ev(check="antenna", **kw):
@@ -312,11 +341,14 @@ def test_sf11_non_waivable_functional_proof_failure(ctl):
 # --------------------------------------------------------------------------
 # SF12 - clean PASS distinguished from waived disposition (machine + human)
 # --------------------------------------------------------------------------
-def test_sf12_disposition_distinguishes_clean_from_waived_pass(ctl):
-    _sim(ctl,_pass_ev("sta"))
+def test_sf12_disposition_distinguishes_clean_from_waived_pass(ctl, tmp_path):
+    # F-01: a genuine tool-derived PASS is required for a CLEAN_PASS; simulated
+    # evidence can only produce a SIMULATED_PASS disposition.
+    _genuine_pass(ctl, tmp_path, "sta")
     clean = ctl.evaluate_gate("g", ["sta"])
     assert clean.disposition == "CLEAN_PASS"
     assert clean.to_dict()["disposition"] == "CLEAN_PASS"
+    assert clean.qualified is True
 
     _sim(ctl,_fail_ev("antenna"))
     ctl.add_waiver(Waiver(
@@ -770,7 +802,7 @@ def test_ub_minimal_evidence_requires_explicit_label(ctl):
 def test_ua_nonwaivable_formal_lec_cannot_be_not_applicable(ctl):
     ev = Evidence.from_run(
         "formal_lec", Status.NOT_APPLICABLE, "",
-        applicability_reason="NA-RULE:NO-MACROS design contains no hard macros",
+        applicability_reason="NA-RULE:NO-UPF design has no power intent file in scope",
     )
     # The fact exists, but the CHECK is non-waivable -> still refused.
     with pytest.raises(ApplicabilityError, match="non-waivable"):
@@ -794,11 +826,18 @@ def test_ua_persisted_nonwaivable_na_is_blocked_at_evaluation(ctl):
     assert gd.checks["formal_lec"]["non_waivable"] is True
 
 
-def test_ua_nonwaivable_check_accepts_genuine_pass_only(ctl):
-    _sim_result(
-        ctl, "formal_lec", Status.PASS, "equivalence proven", exit_code=0,
-        analysis_view="MAPPED_NETLIST", engineering_outcome={"verdict": "PASS"},
-        spec=_tool_spec("formal_lec", "testapi_lec"),
+def test_ua_nonwaivable_check_accepts_genuine_pass_only(ctl, tmp_path):
+    # F-01: use an authoritative (strict) PASS, not a simulated one.
+    rpt = tmp_path / "lec.rpt"
+    rpt.write_text("equivalence proven", encoding="utf-8")
+    ctl.record_evidence(
+        Evidence.from_run(
+            "formal_lec", Status.PASS, "equivalence proven",
+            command=["lec"], exit_code=0, analysis_view="MAPPED_NETLIST",
+            tool_versions={"lec": "1.0"}, reports=[str(rpt)],
+        ),
+        engineering_outcome={"verdict": "PASS"},
+        check_spec=_tool_spec("formal_lec", "testapi_lec"),
     )
     gd = ctl.evaluate_gate("g", ["formal_lec"])
     assert gd.passed
@@ -849,3 +888,225 @@ def test_ua_controller_helper_records_validated_na_for_check(ctl):
             "formal_lec",
             "NA-RULE:NO-MACROS design contains no hard macros",
         )
+
+
+# ==========================================================================
+# F-01 (P1): simulated evidence must be visible and non-authoritative
+# ==========================================================================
+def test_f01_simulated_pass_is_persisted_and_nonauthoritative(tmp_path):
+    """The exact simulated label is persisted; the gate never reports CLEAN_PASS."""
+    state = tmp_path / "state.json"
+    ctl = GateController(str(state))
+    label = "SIMULATED-LABEL"
+    ev = _sim(ctl, _pass_ev("sta"), simulated=label)
+
+    assert ev.evidence_class == "SIMULATED"
+    assert ev.simulated_by == label
+    raw_text = state.read_text(encoding="utf-8")
+    stored = json.loads(raw_text)["evidence"][ev.evidence_id]
+    assert stored["evidence_class"] == "SIMULATED"
+    assert stored["simulated_by"] == label
+    assert label in raw_text  # exact label is retained in state
+
+    gd = ctl.evaluate_gate("G", ["sta"])
+    assert gd.passed and gd.decision == "PASS"  # reporting continuity
+    assert gd.disposition == "SIMULATED_PASS"
+    assert gd.disposition != "CLEAN_PASS"
+    assert gd.qualified is False
+    assert gd.simulated_checks == ["sta"]
+    assert "SIMULATED_PASS" in gd.human_summary
+    assert "NON-AUTHORITATIVE" in gd.human_summary
+    assert gd.to_dict()["simulated_checks"] == ["sta"]
+    assert gd.to_dict()["qualified"] is False
+    assert ctl.report()["last_gate_disposition"] == "SIMULATED_PASS"
+    assert gd.checks["sta"]["simulated_by"] == label
+
+
+def test_f01_provenance_round_trips_through_dict_and_state(tmp_path):
+    """to_dict/from_dict and state save/load preserve the classification."""
+    ev = _pass_ev("sta")
+    ev.mark_simulated("EXACT-LABEL-123")
+    data = ev.to_dict()
+    assert data["evidence_class"] == "SIMULATED"
+    assert data["simulated_by"] == "EXACT-LABEL-123"
+
+    restored = Evidence.from_dict(data)
+    assert restored.evidence_class == "SIMULATED"
+    assert restored.simulated_by == "EXACT-LABEL-123"
+    assert restored.is_simulated is True
+
+    state = tmp_path / "state.json"
+    c1 = GateController(str(state))
+    c1.record_evidence(restored, strict=False, simulated="EXACT-LABEL-123")
+    raw = json.loads(state.read_text(encoding="utf-8"))
+    assert raw["evidence"][ev.evidence_id]["evidence_class"] == "SIMULATED"
+    assert raw["evidence_provenance"][ev.evidence_id]["simulated_by"] == "EXACT-LABEL-123"
+
+    c2 = GateController(str(state))  # fresh controller loads persisted state
+    gd = c2.evaluate_gate("G", ["sta"])
+    assert gd.disposition == "SIMULATED_PASS"
+    assert gd.qualified is False
+
+
+def test_f01_tampered_evidence_record_cannot_strip_simulated_class(tmp_path):
+    """Editing one serialized evidence record cannot forge a clean PASS."""
+    state = tmp_path / "state.json"
+    c1 = GateController(str(state))
+    ev = _sim(c1, _pass_ev("sta"), simulated="SIMULATED-LABEL")
+    eid = ev.evidence_id
+
+    raw = json.loads(state.read_text(encoding="utf-8"))
+    raw["evidence"][eid]["evidence_class"] = "TOOL"       # attacker rewrite
+    raw["evidence"][eid]["simulated_by"] = ""             # attacker rewrite
+    state.write_text(json.dumps(raw), encoding="utf-8")
+
+    c2 = GateController(str(state))
+    gd = c2.evaluate_gate("G", ["sta"])
+    assert gd.disposition == "SIMULATED_PASS"  # independent provenance map wins
+    assert gd.qualified is False
+    assert "sta" in gd.simulated_checks
+
+
+def test_f01_simulated_pass_cannot_authorize_downstream_stage(ctl, tmp_path):
+    """A SIMULATED_PASS is not qualified to authorize a downstream stage."""
+    _sim(ctl, _pass_ev("sta"))
+    ok, reasons = ctl.can_enter_stage("next", [("G", ["sta"])])
+    assert not ok
+    assert any("SIMULATED_PASS" in r for r in reasons)
+
+    # A genuine tool-derived PASS still authorizes the stage.
+    c2 = GateController(str(tmp_path / "state2.json"))
+    _genuine_pass(c2, tmp_path, "sta")
+    ok2, reasons2 = c2.can_enter_stage("next", [("G", ["sta"])])
+    assert ok2, reasons2
+
+
+def test_f01_simulated_pass_with_valid_validator_is_still_nonqualified(ctl):
+    """Even a parsed engineering outcome cannot qualify simulated evidence."""
+    ctl.register_gate(GateSpec(
+        "SIM_SIGN", ("sta",), checks={"sta": _tool_spec("sta")},
+    ))
+    _sim_result(
+        ctl, "sta", Status.PASS, "meets", exit_code=0,
+        analysis_view="ROUTED_EXTRACTED",
+        engineering_outcome={"verdict": "PASS"},
+    )
+    gd = ctl.evaluate_gate("SIM_SIGN", ["sta"])
+    assert gd.passed
+    assert gd.disposition == "SIMULATED_PASS"
+    assert gd.qualified is False
+
+
+# ==========================================================================
+# F-07 (P1): NO-MACROS cannot justify physical-verification N/A
+# ==========================================================================
+_NO_MACROS_DRC = (
+    "NA-RULE:NO-MACROS design contains no hard macros; routed DRC is "
+    "therefore explicitly not applicable"
+)
+
+
+def test_f07_no_macros_cannot_exempt_physical_checks(tmp_path):
+    """Rule-to-check binding closes NO-MACROS on every physical check."""
+    ctl = GateController(str(tmp_path / "state.json"))
+    ctl.register_design_fact("has_macros", False, source="simulated inventory")
+    ctl.register_design_fact(
+        "eco_physical_implementation_present", True, source="routed DEF/GDS inventory"
+    )
+    # The rule remains documented/available for macro-specific checks.
+    assert "NA-RULE:NO-MACROS" in APPLICABILITY_RULES
+
+    for check in ("eco_physical_drc", "eco_physical_lvs", "sta", "gates"):
+        with pytest.raises(ApplicabilityError, match="cannot justify"):
+            validate_applicability_for_check(_NO_MACROS_DRC, check, ctl.design_facts)
+        with pytest.raises(ApplicabilityError, match="cannot justify"):
+            ctl.mark_not_applicable_for_check(check, _NO_MACROS_DRC)
+
+    # The controller's single authoritative boundary is covered too.
+    ev = Evidence.from_run(
+        "eco_physical_drc", Status.NOT_APPLICABLE, "",
+        applicability_reason=_NO_MACROS_DRC,
+    )
+    with pytest.raises(ApplicabilityError, match="cannot justify"):
+        ctl.record_evidence(ev)
+    assert ctl.latest_evidence("eco_physical_drc") is None
+
+
+def test_f07_tampered_na_record_for_physical_drc_is_blocked(ctl):
+    """A serialized legacy NO-MACROS N/A record is rejected at evaluation."""
+    ctl.register_design_fact(
+        "eco_physical_implementation_present", True, source="routed DEF/GDS"
+    )
+    ev = Evidence.from_run(
+        "eco_physical_drc", Status.NOT_APPLICABLE, "",
+        applicability_reason=_NO_MACROS_DRC,
+    )
+    ctl._state["evidence"][ev.evidence_id] = ev.to_dict()
+    ctl._state["check_index"].setdefault("eco_physical_drc", []).append(ev.evidence_id)
+    gd = ctl.evaluate_gate("DRC", ["eco_physical_drc"])
+    assert not gd.passed
+    assert "invalid NOT_APPLICABLE" in gd.reason
+    assert "cannot justify" in gd.checks["eco_physical_drc"]["reason"]
+
+
+def test_f07_macro_specific_no_macros_na_still_valid(ctl):
+    """Guard: a genuinely macro-specific N/A is not broken by the binding."""
+    reason = (
+        "NA-RULE:NO-MACROS design contains no hard macros; macro antenna "
+        "checks are therefore not applicable"
+    )
+    ev = ctl.mark_not_applicable_for_check("macro_antenna", reason)
+    assert ev.status is Status.NOT_APPLICABLE
+    # R6.2: add a proof-bearing check so the gate can authorize production.
+    from pathlib import Path as _Path
+    _genuine_pass(ctl, _Path(str(ctl.state_path)).parent, "macro_proof")
+    gd = ctl.evaluate_gate("MACRO", ["macro_antenna", "macro_proof"])
+    assert gd.passed
+    assert gd.disposition == "NOT_APPLICABLE"
+    assert gd.qualified is True
+
+
+def test_f07_physical_check_na_requires_physical_scope_fact(ctl):
+    """Guard: only the physical-scope rule with a corroborating fact can exempt."""
+    physical_na = (
+        "NA-RULE:NO-PHYSICAL-IMPLEMENTATION no placed or routed physical "
+        "implementation for this netlist-only candidate"
+    )
+    ctl.register_design_fact(
+        "eco_physical_implementation_present", True, source="routed DEF/GDS"
+    )
+    with pytest.raises(ApplicabilityError, match="contradicts"):
+        ctl.mark_not_applicable_for_check("eco_physical_drc", physical_na)
+
+    ctl.register_design_fact(
+        "eco_physical_implementation_present", False, source="RTL-only inventory"
+    )
+    ctl.mark_not_applicable_for_check("eco_physical_drc", physical_na)
+    gd = ctl.evaluate_gate("DRC", ["eco_physical_drc"])
+    assert gd.passed
+    assert gd.disposition == "NOT_APPLICABLE"
+
+
+# ==========================================================================
+# Diagnostics guard: synthetic ECO digests are not registered file inputs
+# ==========================================================================
+def test_synthetic_revision_digest_is_not_a_stale_file_input(ctl):
+    """ECO __*-revision__ digests must not hide a genuine FAIL verdict.
+
+    These opaque digests are verified by the ECO revalidation path, not by the
+    controller's file-input hash registry. Genuine registered-input staleness
+    is still enforced (no check is weakened).
+    """
+    ev = _pass_ev("eco_lec")
+    ev.input_hashes = {
+        "__candidate_revision__": "R1",
+        "__dependencies__": "D1",
+    }
+    assert ev.stale_inputs({}) == []
+    assert ev.is_stale({}) is False
+
+    ev.input_hashes["rtl"] = "H1"
+    assert ev.stale_inputs({"rtl": "H1"}) == []
+    assert ev.stale_inputs({"rtl": "H2"}) == ["rtl"]
+    assert ev.is_stale({"rtl": "H2"}) is True
+

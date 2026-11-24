@@ -18,6 +18,13 @@ and docs/reviews/second-review.md SR-03):
   surfaced in every gate report. Functional-proof failures are non-waivable.
 * Clean PASS, WAIVED_PASS and NOT_APPLICABLE are distinct dispositions; a
   validated N/A gate is never reported as CLEAN_PASS (U-A).
+* F-01: caller-labelled simulated/internal evidence is persisted with an
+  explicit classification and exact label; it can only produce a
+  SIMULATED_PASS disposition, which is visible and NOT qualified to authorize
+  production work or downstream stages.
+* F-07: applicability rules are bound to allowed check ids. NO-MACROS can only
+  justify genuinely macro-specific checks and no non-physical rule can exempt
+  physical verification.
 * Strict provenance validation is the DEFAULT for substantive statuses; only
   explicitly labelled simulated checks may opt out with ``strict=False`` (U-B).
 * Registered gate specifications define the authoritative required-check set,
@@ -31,9 +38,13 @@ and docs/reviews/second-review.md SR-03):
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Iterable, Mapping, Sequence
@@ -77,11 +88,197 @@ class GateValidationError(ValueError):
     """Raised when a submitted check fails the authoritative validation boundary."""
 
 
+# ---------------------------------------------------------------------------
+# Ledger integrity primitive (R5 gate-definition trust; reusable by Agent 9)
+# ---------------------------------------------------------------------------
+# A gate definition is authoritative only when (a) it is derived from a
+# registered/default GateSpec, or (b) it was recorded through the controller's
+# authoritative API AND its persisted binding verifies under a key that lives
+# OUTSIDE the ledger it protects.  A MAC stored next to its own key is not a
+# security boundary (A7-04), so the key is resolved from the process environment
+# or, when no key is provisioned, generated as a per-process ephemeral secret
+# that is NEVER written to state.json.  A fresh process without the provisioned
+# key therefore cannot verify persisted bindings and fails closed.
+LEDGER_KEY_ENV = "ASSISTANT_LEDGER_KEY"
+_LEDGER_KEY_LABEL = b"assistant-ledger-key/v1\x00"
+_MIN_LEDGER_KEY_BYTES = 16
+_LEDGER_BINDINGS_FIELD = "ledger_bindings"
+
+#: Domain-separated MAC domains.  A binding made in one domain cannot be
+#: replayed in another.  Agent 9 owns the evidence domain (see report).
+DOMAIN_GATE_DEFINITION = "gate_definition/v1"
+# R6: evidence provenance is bound under the SAME external/ephemeral trust root
+# as gate definitions. There is no in-ledger key (P0-1 fix).
+DOMAIN_EVIDENCE = "evidence/v1"
+# R6: waivers are authorization decisions and must be MAC-bound too; a
+# ledger-only attacker must not forge a waiver to qualify failing evidence.
+DOMAIN_WAIVER = "waiver/v1"
+# R6.3: one-time proof-nonce ownership is an authorization decision and must be
+# MAC-bound under the SAME external key as every other ledger decision. The
+# registry is durable (state.json) so replay from an earlier run/process fails
+# closed. The proof's own nonce is the key -- NEVER a caller label.
+DOMAIN_PROOF_NONCE = "proof_nonce/v1"
+
+_EPHEMERAL_LEDGER_KEY: bytes | None = None
+#: Process-wide critical section: record -> envelope mint -> nonce consume.
+_PROOF_RECORD_LOCK = threading.RLock()
+
+
+class LedgerIntegrityError(RuntimeError):
+    """Raised when ledger integrity cannot be established (fail closed)."""
+
+
+def _derive_ledger_key(passphrase: str) -> bytes:
+    """Derive a fixed-length HMAC key from an external secret passphrase."""
+    return hashlib.sha256(_LEDGER_KEY_LABEL + passphrase.encode("utf-8")).digest()
+
+
+def resolve_ledger_key(*, allow_ephemeral: bool = True) -> tuple[bytes, str]:
+    """Resolve the ledger integrity key from OUTSIDE the ledger.
+
+    Resolution order:
+      1. ``ASSISTANT_LEDGER_KEY`` in the process environment.  This is the
+         production/restart flow: the same provisioned passphrase yields the
+         same key in every process, so persisted bindings keep verifying.
+      2. If unset and *allow_ephemeral*, a per-process random key, generated
+         once and cached at module scope.  It is never persisted, so a *new*
+         process cannot verify bindings written by an earlier one (fail closed)
+         while ordinary within-process flows and fresh ledger creation work.
+      3. If unset and *allow_ephemeral=False*, raise ``LedgerIntegrityError``.
+         Production callers that require a real external trust anchor should
+         use this strict form.
+
+    Returns ``(key_bytes, source)`` where source is ``"environment"`` or
+    ``"ephemeral"``.
+    """
+    passphrase = os.environ.get(LEDGER_KEY_ENV, "")
+    if passphrase:
+        key = _derive_ledger_key(passphrase)
+        if len(key) < _MIN_LEDGER_KEY_BYTES:  # pragma: no cover - defensive
+            raise LedgerIntegrityError("derived ledger integrity key is too short")
+        return key, "environment"
+    if not allow_ephemeral:
+        raise LedgerIntegrityError(
+            f"{LEDGER_KEY_ENV} is not set; refusing to run without an external "
+            "ledger integrity key"
+        )
+    global _EPHEMERAL_LEDGER_KEY
+    if _EPHEMERAL_LEDGER_KEY is None:
+        _EPHEMERAL_LEDGER_KEY = secrets.token_bytes(32)
+    return _EPHEMERAL_LEDGER_KEY, "ephemeral"
+
+
+class LedgerIntegrity:
+    """Reusable HMAC binding primitive keyed from outside the ledger.
+
+    ``domain`` separates record kinds (gate definitions vs. evidence, etc.).
+    ``record_id`` is bound into the payload so a valid MAC for one record cannot
+    be replayed onto another record with an identical body.  Agent 9 can reuse
+    this class directly for evidence-provenance provenance bindings.
+    """
+
+    def __init__(self, key: bytes):
+        if len(key) < _MIN_LEDGER_KEY_BYTES:
+            raise LedgerIntegrityError("ledger integrity key is too short")
+        self._key = bytes(key)
+
+    def mac(self, domain: str, payload: Mapping, *, record_id: str = "") -> str:
+        """Return the hex MAC for *payload* in *domain*."""
+        body = json.dumps(
+            {"record_id": record_id, "payload": payload},
+            sort_keys=True, separators=(",", ":"), default=str,
+        )
+        message = (domain + "\x00" + body).encode("utf-8")
+        return hmac.new(self._key, message, hashlib.sha256).hexdigest()
+
+    def verify(
+        self, domain: str, payload: Mapping | None, expected: str | None, *,
+        record_id: str = "",
+    ) -> bool:
+        """Constant-time verification; missing data/MAC fails closed."""
+        if payload is None or not expected:
+            return False
+        return hmac.compare_digest(
+            str(expected), self.mac(domain, payload, record_id=record_id)
+        )
+
+
+def read_binding(state: Mapping, domain: str, record_id: str) -> str | None:
+    """Read a persisted MAC (never secret) for one record in one domain."""
+    return (
+        (state.get(_LEDGER_BINDINGS_FIELD) or {})
+        .get(domain, {})
+        .get(record_id)
+    )
+
+
+def write_binding(state: dict, domain: str, record_id: str, mac_value: str) -> None:
+    """Persist a MAC for one record in one domain."""
+    state.setdefault(_LEDGER_BINDINGS_FIELD, {}).setdefault(domain, {})[record_id] = (
+        str(mac_value)
+    )
+
+
+#: Maps a MAC domain to a resolver returning the payload that domain binds.
+#: Agent 9 registers its evidence domain here so ``verify_ledger_integrity``
+#: can cover it; the gate-definition domain is registered below.
+BOUND_PAYLOAD_RESOLVERS: dict[
+    str, Callable[[Mapping, str], Mapping | None]
+] = {}
+
+
+def _gate_definition_payload(state: Mapping, record_id: str) -> Mapping | None:
+    return (state.get("gate_definitions") or {}).get(record_id)
+
+
+BOUND_PAYLOAD_RESOLVERS[DOMAIN_GATE_DEFINITION] = _gate_definition_payload
+
+
+def _evidence_payload(state: Mapping, record_id: str) -> Mapping | None:
+    """R6: resolver for evidence + provenance (DOMAIN_EVIDENCE)."""
+    ev = (state.get("evidence") or {}).get(record_id)
+    if ev is None:
+        return None
+    prov = (state.get("evidence_provenance") or {}).get(record_id) or {}
+    return {"evidence": ev, "provenance": prov}
+
+
+BOUND_PAYLOAD_RESOLVERS[DOMAIN_EVIDENCE] = _evidence_payload
+
+
+def _waiver_payload(state: Mapping, record_id: str) -> Mapping | None:
+    for w in state.get("waivers") or []:
+        if w.get("waiver_id") == record_id:
+            return w
+    return None
+
+
+BOUND_PAYLOAD_RESOLVERS[DOMAIN_WAIVER] = _waiver_payload
+
+
+def _proof_nonce_payload(state: Mapping, record_id: str) -> Mapping | None:
+    """R6.3: payload bound for a consumed proof nonce (cross-run replay ledger)."""
+    registry = state.get("used_proof_nonces") or {}
+    if record_id not in registry:
+        return None
+    return {"nonce": record_id, "evidence_id": registry[record_id]}
+
+
+BOUND_PAYLOAD_RESOLVERS[DOMAIN_PROOF_NONCE] = _proof_nonce_payload
+
+
 #: Applicability reasons must start with an explicit rule token and explain
 #: why the check does not apply.  Rule ids live in APPLICABILITY_RULES.
 APPLICABILITY_RULES: dict[str, str] = {
     "NA-RULE:NO-UPF": "design has no UPF/CPF power-intent file in scope",
-    "NA-RULE:NO-MACROS": "design contains no hard macros",
+    "NA-RULE:NO-MACROS": "design contains no hard macros (macro-specific checks only)",
+    # TR-01: a standard-cell design can have placed/routed geometry. The absence
+    # of macros is NOT a reason to exempt physical verification. This rule is
+    # corroborated by a recorded implementation fact, not by caller prose.
+    "NA-RULE:NO-PHYSICAL-IMPLEMENTATION": (
+        "ECO candidate has no placed or routed physical implementation "
+        "(netlist-only exploration)"
+    ),
     "NA-RULE:NO-CLOCK-GATES": "design contains no integrated clock gates",
     "NA-RULE:NO-ANALOG": "design contains no analog/hard IP",
     "NA-RULE:COMBO-ONLY": "design is purely combinational (no sequential elements)",
@@ -93,10 +290,65 @@ APPLICABILITY_RULES: dict[str, str] = {
 APPLICABILITY_RULE_FACTS: dict[str, tuple[str, object]] = {
     "NA-RULE:NO-UPF": ("has_upf", False),
     "NA-RULE:NO-MACROS": ("has_macros", False),
+    "NA-RULE:NO-PHYSICAL-IMPLEMENTATION": ("eco_physical_implementation_present", False),
     "NA-RULE:NO-CLOCK-GATES": ("has_clock_gates", False),
     "NA-RULE:NO-ANALOG": ("has_analog", False),
     "NA-RULE:COMBO-ONLY": ("is_combinational", True),
 }
+
+# F-07: bind applicability rules to the checks they may justify. A standard-cell
+# design can have placed/routed geometry even with no hard macros, so an
+# inventory rule that says nothing about physical scope can never exempt
+# physical verification. Only the dedicated physical-implementation rule (which
+# is corroborated by a registered design fact above) may do so.
+PHYSICAL_VERIFICATION_CHECKS: frozenset[str] = frozenset(
+    {
+        "eco_physical_drc", "eco_physical_lvs", "eco_physical_antenna",
+        "eco_physical_ir_drop", "physical_drc", "physical_lvs",
+        "drc", "lvs", "antenna", "ir_drop", "sta", "timing",
+        "parasitics", "gates", "clock_gates", "physical_verification",
+    }
+)
+
+#: Macro-specific checks are the ONLY checks NA-RULE:NO-MACROS may justify.
+MACRO_SPECIFIC_CHECKS: frozenset[str] = frozenset(
+    {
+        "macro_drc", "macro_lvs", "macro_antenna", "macro_current_density",
+        "macro_ir_drop", "macro_timing", "macro_physical_verify",
+    }
+)
+
+#: Rules permitted to justify N/A for a physical-verification check. Corroboration
+#: by the physical-scope design fact is still mandatory (see FACTS above).
+PHYSICAL_NA_RULES: frozenset[str] = frozenset(
+    {"NA-RULE:NO-PHYSICAL-IMPLEMENTATION"}
+)
+
+#: Explicit rule -> allowed check-id bindings. Rules not listed are generic but
+#: remain subject to the physical-check restriction above.
+APPLICABILITY_RULE_CHECKS: dict[str, frozenset[str]] = {
+    "NA-RULE:NO-MACROS": MACRO_SPECIFIC_CHECKS,
+}
+
+
+def _applicability_rule_allows_check(rule_token: str, check_id: str) -> bool:
+    """Whether *rule_token* may justify NOT_APPLICABLE for *check_id*.
+
+    Physical verification is never exempted by a non-physical inventory rule
+    (macro/UPF/analog/clock-gate absence). Only NA-RULE:NO-PHYSICAL-IMPLEMENTATION
+    may do so, and it must be corroborated by a registered design fact.
+    """
+    cid = (check_id or "").strip()
+    if cid in PHYSICAL_VERIFICATION_CHECKS and rule_token not in PHYSICAL_NA_RULES:
+        return False
+    allowed = APPLICABILITY_RULE_CHECKS.get(rule_token)
+    if allowed is None:
+        return True
+    if cid in allowed:
+        return True
+    # Prefix convention keeps macro-specific check families working.
+    return cid.startswith("macro_") and cid not in PHYSICAL_VERIFICATION_CHECKS
+
 
 MIN_REASON_LEN = 20
 MIN_WAIVER_REASON_LEN = 20
@@ -149,13 +401,20 @@ def _parse_utc(value: str) -> _dt.datetime:
     return dt.astimezone(_dt.timezone.utc)
 
 
-def validate_applicability_reason(reason: str, design_facts: Mapping | None = None) -> str:
-    """Validate + normalize a NOT_APPLICABLE reason (U-A).
+def validate_applicability_reason(
+    reason: str,
+    design_facts: Mapping | None = None,
+    check_id: str = "",
+) -> str:
+    """Validate + normalize a NOT_APPLICABLE reason (U-A, F-07).
 
     Applicability is NEVER decided by a free-text reason string alone: validated
     design facts matching the rule (``APPLICABILITY_RULE_FACTS``) are mandatory.
-    This is the single validator invoked from ``record_evidence`` so every
-    recording boundary (direct API, CLI, ``mark_not_applicable``) is covered.
+    When ``check_id`` is supplied the rule is also bound to the target check
+    (``APPLICABILITY_RULE_CHECKS``): NO-MACROS may only justify macro-specific
+    checks and no non-physical rule may exempt physical verification. This is
+    the single validator invoked from ``record_evidence`` so every recording
+    boundary (direct API, CLI, ``mark_not_applicable``) is covered.
     A missing/empty ``design_facts`` mapping is rejected outright.
     """
     if not design_facts:
@@ -178,6 +437,16 @@ def validate_applicability_reason(reason: str, design_facts: Mapping | None = No
         raise ApplicabilityError(
             f"unknown applicability rule {rule_token!r}; known rules: "
             + ", ".join(sorted(APPLICABILITY_RULES))
+        )
+    # F-07: a rule can only corroborate checks it is bound to. Absence of macros
+    # is not a physical-scope fact and can never exempt physical verification.
+    if check_id and not _applicability_rule_allows_check(rule_token, check_id):
+        raise ApplicabilityError(
+            f"applicability rule {rule_token} cannot justify NOT_APPLICABLE for "
+            f"check {check_id!r}: a non-physical inventory rule never exempts "
+            "physical verification; use NA-RULE:NO-PHYSICAL-IMPLEMENTATION with "
+            "corroborating implementation facts (a registered physical-scope "
+            "design fact)"
         )
     # The reason must also say something beyond the rule id.
     if len(text) <= len(rule_token) + MIN_REASON_LEN // 2:
@@ -222,7 +491,7 @@ def validate_applicability_for_check(
             f"non-waivable check {check_id!r} cannot be NOT_APPLICABLE; "
             "genuine PASS evidence is required"
         )
-    return validate_applicability_reason(reason, design_facts)
+    return validate_applicability_reason(reason, design_facts, check_id=check_id)
 
 
 # Backwards-compatible private alias (kept so existing callers do not break).
@@ -498,9 +767,12 @@ def validate_gate_submission(
                 f"non-waivable check {ev.check_id!r} cannot be NOT_APPLICABLE; "
                 "genuine PASS evidence is required"
             )
-        # Raises ApplicabilityError when facts are missing/mismatched (reason-only
-        # N/A is rejected in this authoritative boundary).
-        validate_applicability_reason(ev.applicability_reason or ev.reason, design_facts)
+        # Raises ApplicabilityError when facts are missing/mismatched or when the
+        # rule is not bound to this check (F-07). Reason-only N/A is rejected in
+        # this authoritative boundary.
+        validate_applicability_reason(
+            ev.applicability_reason or ev.reason, design_facts, check_id=ev.check_id
+        )
         return errors
 
     if not (ev.reason or "").strip():
@@ -621,6 +893,12 @@ class GateDecision:
     disposition: str = "CLEAN_PASS"
     waived_checks: list[str] = field(default_factory=list)
     na_checks: list[str] = field(default_factory=list)
+    #: F-01: check ids whose PASS was derived from caller-labelled simulated
+    #: evidence. A SIMULATED_PASS decision is not authoritative and is never
+    #: qualified for production / downstream stage authorization.
+    simulated_checks: list[str] = field(default_factory=list)
+    #: True only for a genuinely authoritative PASS (never for SIMULATED_PASS).
+    qualified: bool = True
 
     @property
     def passed(self) -> bool:
@@ -628,7 +906,14 @@ class GateDecision:
 
     @property
     def human_summary(self) -> str:
-        return f"[{self.disposition}] {self.gate_id}: {self.reason}"
+        summary = f"[{self.disposition}] {self.gate_id}: {self.reason}"
+        if self.simulated_checks:
+            summary += (
+                " (SIMULATED / NON-AUTHORITATIVE: "
+                + ", ".join(self.simulated_checks)
+                + ")"
+            )
+        return summary
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -655,8 +940,18 @@ class GateController:
             "registered_inputs": {},  # label -> path (persisted across restart)
             "design_facts": {},       # validated design facts
             "submissions": {},        # evidence_id -> parsed outcome / spec
-            "gate_specs": {},         # persisted registered gate specs
-            "check_specs": {},        # persisted registered check specs
+            "gate_specs": {},         # persisted registered gate specs (AUTHORITATIVE)
+            "check_specs": {},        # persisted registered check specs (AUTHORITATIVE)
+            # R4 state-trust boundary. gate_definitions and evidence_integrity
+            # are AUTHORITATIVE gate/evidence metadata; gate_history (below) is
+            # DESCRIPTIVE cache and is never consulted for required_checks.
+            "gate_definitions": {},   # gate_id -> pinned authoritative definition
+            "evidence_integrity": {},  # evidence_id -> HMAC binding (provenance included)
+            # R6.3: durable, external-key-bound proof-nonce ownership ledger.
+            # nonce -> evidence_id. A nonce may only ever be owned by ONE
+            # evidence item; reuse by another item is denied fail-closed.
+            "used_proof_nonces": {},
+            "_integrity_key": "",     # per-ledger process-generated HMAC key
             "created_utc": utc_now(),
             "updated_utc": utc_now(),
         }
@@ -664,6 +959,23 @@ class GateController:
             with open(self.state_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             self._state.update(loaded)
+
+        # R5: ledger integrity key resolved from OUTSIDE the ledger. Never
+        # written to state.json. A fresh process with no provisioned key gets a
+        # new ephemeral key and therefore cannot verify persisted bindings.
+        self._ledger_key, self._ledger_key_source = resolve_ledger_key()
+        self.ledger_integrity = LedgerIntegrity(self._ledger_key)
+        self._unverifiable_definitions: list[str] = []
+        self._state.setdefault(_LEDGER_BINDINGS_FIELD, {})
+
+        # R6 P0-1 FIX: no provenance key is generated, read, or persisted from
+        # the ledger. Evidence provenance is bound with the SAME external
+        # (env/provisioned or per-process ephemeral) key used for gate
+        # definitions, via self.ledger_integrity. A ledger-only attacker cannot
+        # obtain the key, therefore cannot recompute a forged provenance MAC.
+        # Any legacy `_integrity_key` left in an old state file is purged and
+        # NEVER used.
+        self._state.pop("_integrity_key", None)
 
         # Input registry and design facts live *in state* so they survive a
         # restart (SR-03 sub-finding 9). ``self._inputs`` is a live view.
@@ -673,6 +985,13 @@ class GateController:
         self._state.setdefault("gate_specs", {})
         self._state.setdefault("check_specs", {})
         self._state.setdefault("restart_history", [])
+        # F-01: independent persisted record of evidence provenance. Gate
+        # evaluation consults BOTH this map and the evidence record so tampering
+        # with a single serialized record cannot strip simulated classification.
+        self._state.setdefault("evidence_provenance", {})
+        self._state.setdefault("gate_definitions", {})
+        self._state.setdefault("evidence_integrity", {})
+        self._state.setdefault("used_proof_nonces", {})
 
         self.gate_specs: dict[str, GateSpec] = {}
         self.check_specs: dict[str, CheckSpec] = {}
@@ -686,6 +1005,25 @@ class GateController:
                 self.check_specs[cid] = CheckSpec.from_dict(data)
             except (TypeError, ValueError):  # pragma: no cover - defensive
                 continue
+
+        # R5: authoritative gate definitions pinned on first evaluation. A
+        # definition is authoritative ONLY when its binding verifies under the
+        # external key. A forged/unbound definition is loaded into raw state for
+        # tamper evidence but is NOT admitted as authoritative, so an upstream
+        # re-evaluation fails closed instead of trusting it (A7-03).
+        self.gate_definitions: dict[str, dict] = {}
+        for gid, definition in (self._state.get("gate_definitions") or {}).items():
+            expected = read_binding(self._state, DOMAIN_GATE_DEFINITION, gid)
+            if self.ledger_integrity.verify(
+                DOMAIN_GATE_DEFINITION, definition, expected, record_id=gid
+            ):
+                self.gate_definitions[gid] = definition
+            else:
+                self._unverifiable_definitions.append(gid)
+        # R4: default_gate_specs() now has a REAL call site in the gate-evaluation
+        # path. Production gate definitions are authoritative even if a caller
+        # never registered one; explicitly registered specs still take priority.
+        self._default_specs: dict[str, GateSpec] = default_gate_specs()
 
     # -- persistence ----------------------------------------------------------
     def _save(self) -> None:
@@ -708,6 +1046,37 @@ class GateController:
                 f"run is CANCELLED ({self._state['cancel_reason']}); restart() "
                 "before starting new work"
             )
+
+    # -- ledger integrity (R5; reusable by Agent 9) ---------------------------
+    @property
+    def ledger_key_source(self) -> str:
+        """``"environment"`` when provisioned externally, else ``"ephemeral"``."""
+        return self._ledger_key_source
+
+    @property
+    def unverifiable_gate_definitions(self) -> list[str]:
+        """Gate ids whose persisted definition binding did not verify on load."""
+        return list(self._unverifiable_definitions)
+
+    def verify_ledger_integrity(self) -> list[str]:
+        """Return ``domain:record_id`` for every bound record that fails MAC
+        verification (empty list = all verified). Unknown domains without a
+        registered payload resolver are skipped; Agent 9 registers its evidence
+        domain in ``BOUND_PAYLOAD_RESOLVERS`` to include it here.
+        """
+        problems: list[str] = []
+        bindings = self._state.get(_LEDGER_BINDINGS_FIELD) or {}
+        for domain, records in bindings.items():
+            resolver = BOUND_PAYLOAD_RESOLVERS.get(domain)
+            if resolver is None:
+                continue
+            for record_id, expected in records.items():
+                payload = resolver(self._state, record_id)
+                if not self.ledger_integrity.verify(
+                    domain, payload, expected, record_id=record_id
+                ):
+                    problems.append(f"{domain}:{record_id}")
+        return sorted(problems)
 
     # -- spec registration ----------------------------------------------------
     def register_check_spec(self, spec: CheckSpec) -> CheckSpec:
@@ -733,6 +1102,105 @@ class GateController:
         self._state["gate_specs"][spec.gate_id] = spec.to_dict()
         self._save()
         return spec
+
+    # -- authoritative state / trust boundary (R4) ----------------------------
+    def _evidence_integrity(self, ev_dict: Mapping, prov_dict: Mapping,
+                            record_id: str = "") -> str:
+        """R6: HMAC over evidence + provenance with the EXTERNAL trust root.
+
+        P0-1 fix: the key is `resolve_ledger_key()` (env/provisioned or
+        per-process ephemeral), never a ledger field. The record_id is bound
+        so a MAC cannot be replayed onto another evidence id. The binding is
+        also written to `ledger_bindings[DOMAIN_EVIDENCE]` so
+        `verify_ledger_integrity()` covers evidence provenance.
+        """
+        return self.ledger_integrity.mac(
+            DOMAIN_EVIDENCE,
+            {"evidence": ev_dict, "provenance": prov_dict},
+            record_id=record_id or str(ev_dict.get("evidence_id", "")),
+        )
+
+    def _integrity_ok(self, ev: Evidence | None) -> bool:
+        """Whether the persisted evidence + provenance still match the binding."""
+        if ev is None:
+            return False
+        expected = (self._state.get("evidence_integrity") or {}).get(ev.evidence_id)
+        if not expected:
+            return False
+        rec = (self._state.get("evidence") or {}).get(ev.evidence_id)
+        if rec is None:
+            return False
+        prov = (self._state.get("evidence_provenance") or {}).get(ev.evidence_id) or {}
+        return hmac.compare_digest(
+            str(expected), self._evidence_integrity(rec, prov, ev.evidence_id)
+        )
+
+    def _verified_definition(self, gate_id: str) -> dict | None:
+        """Return the pinned definition only if its external-key binding holds.
+
+        Re-checked at use time (defense in depth on top of the load-time filter)
+        so an in-process mutation cannot substitute an unbound definition.
+        """
+        definition = self.gate_definitions.get(gate_id)
+        if definition is None:
+            return None
+        expected = read_binding(self._state, DOMAIN_GATE_DEFINITION, gate_id)
+        if not self.ledger_integrity.verify(
+            DOMAIN_GATE_DEFINITION, definition, expected, record_id=gate_id
+        ):
+            return None
+        return definition
+
+    def _source_of_truth(self, gate_id: str) -> tuple["GateSpec | None", "dict | None"]:
+        """Authoritative sources for *gate_id*.
+
+        A registered ``GateSpec`` is strongest, then a pinned gate definition
+        whose binding verifies under the external key, then the production
+        defaults. ``gate_history`` is descriptive cache and is deliberately
+        NEVER consulted here (A3-F1).
+        """
+        spec = self.gate_specs.get(gate_id) or self._default_specs.get(gate_id)
+        return spec, self._verified_definition(gate_id)
+
+    def _record_gate_definition(
+        self, gate_id: str, required_checks: Sequence[str],
+        required_view: str | None, upstream_gates: Iterable[str],
+    ) -> None:
+        """Record the authoritative required checks from an explicit evaluation.
+
+        A caller's *explicit* declaration is authoritative (unlike the cached
+        ``gate_history`` summary, which is never trusted). The most recent
+        explicit evaluation wins, so a caller may legitimately expand a gate's
+        check set over time. Upstream re-evaluation uses this definition, never
+        the mutable ``gate_history``; a gate with cached history but no recorded
+        definition therefore fails closed. A registered ``GateSpec`` overrides
+        any caller declaration.
+        """
+        spec, _ = self._source_of_truth(gate_id)
+        if spec is not None:
+            return  # registered/default spec is authoritative
+        checks = list(required_checks or ())
+        if not checks:
+            return  # let _evaluate_gate raise the empty-list GateDefinitionError
+        definition = {
+            "required_checks": checks,
+            "required_view": required_view,
+            "upstream": list(upstream_gates or ()),
+        }
+        self.gate_definitions[gate_id] = definition
+        self._state["gate_definitions"][gate_id] = dict(definition)
+        # R5: bind the definition under the external key. The MAC is public and
+        # may live in the ledger; the key never does, so a state writer cannot
+        # recompute it. record_id binding prevents cross-gate MAC replay.
+        write_binding(
+            self._state, DOMAIN_GATE_DEFINITION, gate_id,
+            self.ledger_integrity.mac(
+                DOMAIN_GATE_DEFINITION, definition, record_id=gate_id
+            ),
+        )
+        if gate_id in self._unverifiable_definitions:
+            self._unverifiable_definitions.remove(gate_id)
+        self._save()
 
     # -- input registry -------------------------------------------------------
     def register_input(self, label: str, path: str) -> str:
@@ -794,6 +1262,153 @@ class GateController:
         return entry
 
     # -- evidence -------------------------------------------------------------
+    @staticmethod
+    def _proof_command_mismatch(proof, command) -> str:
+        """R6.3 defence in depth: a supplied proof must bind to *this* command.
+
+        Returns '' when the binding holds (or no proof was supplied), otherwise
+        a specific reason.  Uses the SAME helper as the proof producer.  A
+        missing helper / malformed proof fails closed.  The authoritative gate
+        remains ``state_machine.check_7``; this only stops a bad submission at
+        the API boundary before any TOOL_EXECUTION envelope is minted.
+        """
+        if proof is None:
+            return ""
+        if hasattr(proof, "to_dict"):
+            try:
+                proof = proof.to_dict()
+            except Exception:  # noqa: BLE001
+                return "execution proof could not be serialized"
+        if not isinstance(proof, Mapping):
+            return "execution proof must be a mapping"
+        try:
+            from .execution_trust import _sha256_argv
+        except Exception:  # noqa: BLE001
+            return "execution_trust._sha256_argv unavailable -> fail closed"
+        argv = list(command or []) if not isinstance(command, (str, bytes)) else [str(command)]
+        try:
+            expected = str(_sha256_argv(argv))
+        except Exception as exc:  # noqa: BLE001
+            return f"command digest recomputation failed ({type(exc).__name__}: {exc})"
+        supplied = str(proof.get("argv_sha256", "") or "").strip().lower()
+        if not supplied:
+            return "execution proof has no argv_sha256"
+        if supplied != expected:
+            return (
+                f"execution proof argv_sha256 {supplied} does not bind the recorded "
+                f"command (expected {expected})"
+            )
+        return ""
+
+    @staticmethod
+    def _evidence_digest_material(ev: Evidence) -> dict:
+        """Derive authoritative digest material from a recorded Evidence.
+
+        R6.3 concern #2: envelopes/records previously hardcoded
+        ``consumed_sha256=''`` and ``dependencies=()``, leaving checks 8/9 and
+        the proof<->record digest binding without an authoritative source.
+        Values here are computed ONLY from the trusted-in-ledger Evidence
+        record, never from caller-supplied proof digest fields.
+        """
+        consumed: dict[str, str] = {}
+        for label, mapping in (
+            ("input", ev.input_hashes),
+            ("config", ev.config_hashes),
+            ("constraint", ev.constraint_hashes),
+            ("library", ev.library_hashes),
+            ("pdk", ev.pdk_hashes),
+        ):
+            for name, digest in (mapping or {}).items():
+                consumed[f"{label}:{name}"] = str(digest)
+        deps = dict(ev.dependencies or {})
+        candidate = str(getattr(ev, "candidate_digest", "") or "")
+        return {"consumed": consumed, "dependencies": deps, "candidate": candidate}
+
+    def consume_proof_nonces(self, claims: Mapping[str, str]) -> bool:
+        """Atomically claim proof nonces for their evidence ids (durable).
+
+        ``claims`` maps ``proof.nonce -> evidence_id``.  Returns False (and
+        mutates nothing) when ANY nonce is already owned by a DIFFERENT
+        evidence item, when a persisted binding is missing/invalid, or when the
+        state cannot be written.  Re-claiming a nonce for the SAME evidence id
+        is idempotent so repeated gate evaluations never self-deny.
+
+        The check-and-consume runs in one process-wide critical section and is
+        persisted to state.json with an external-key MAC binding; a fresh
+        process with the same provisioned key sees the same ledger, while a
+        ledger-only attacker cannot rewrite ownership.
+        """
+        if not claims:
+            return True
+        with _PROOF_RECORD_LOCK:
+            try:
+                # Re-read the durable ledger so a second process's claim cannot
+                # be missed by an in-memory snapshot (cross-run replay).
+                disk_state: dict | None = None
+                if os.path.exists(self.state_path):
+                    with open(self.state_path, "r", encoding="utf-8") as fh:
+                        disk_state = json.load(fh)
+                registry = dict(
+                    (disk_state or self._state).get("used_proof_nonces", {}) or {}
+                )
+                bindings = (disk_state or self._state).get(_LEDGER_BINDINGS_FIELD, {}) or {}
+                nonces_bindings = bindings.get(DOMAIN_PROOF_NONCE, {}) or {}
+                # 1. validate every existing binding we rely on + detect conflicts
+                for nonce, eid in claims.items():
+                    if not nonce:
+                        return False
+                    prior = registry.get(nonce)
+                    if prior is not None and str(prior) != str(eid):
+                        return False
+                    if prior is not None:
+                        expected = nonces_bindings.get(nonce)
+                        if not self.ledger_integrity.verify(
+                            DOMAIN_PROOF_NONCE,
+                            {"nonce": nonce, "evidence_id": prior},
+                            expected,
+                            record_id=nonce,
+                        ):
+                            return False
+                # 2. consume (idempotent) + persist atomically
+                changed = False
+                new_macs: dict[str, str] = {}
+                for nonce, eid in claims.items():
+                    if registry.get(nonce) is None:
+                        registry[nonce] = str(eid)
+                        new_macs[nonce] = self.ledger_integrity.mac(
+                            DOMAIN_PROOF_NONCE,
+                            {"nonce": nonce, "evidence_id": str(eid)},
+                            record_id=nonce,
+                        )
+                        write_binding(
+                            self._state, DOMAIN_PROOF_NONCE, nonce, new_macs[nonce]
+                        )
+                        changed = True
+                self._state["used_proof_nonces"] = dict(registry)
+                if disk_state is not None:
+                    disk_state["used_proof_nonces"] = dict(registry)
+                    disk_binding = disk_state.setdefault(_LEDGER_BINDINGS_FIELD, {})
+                    disk_nonces = disk_binding.setdefault(DOMAIN_PROOF_NONCE, {})
+                    for nonce, mac_value in new_macs.items():
+                        disk_nonces[nonce] = mac_value
+                    # atomic replace under the lock
+                    directory = os.path.dirname(os.path.abspath(self.state_path)) or "."
+                    os.makedirs(directory, exist_ok=True)
+                    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".nonce-", suffix=".json")
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                            json.dump(disk_state, fh, indent=2, sort_keys=True)
+                        os.replace(tmp, self.state_path)
+                    except BaseException:
+                        if os.path.exists(tmp):
+                            os.unlink(tmp)
+                        raise
+                elif changed:
+                    self._save()
+                return True
+            except Exception:  # noqa: BLE001 - fail closed
+                return False
+
     def record_evidence(
         self,
         ev: Evidence,
@@ -820,11 +1435,25 @@ class GateController:
         sub-finding 14).
         """
         self._require_active()
+        # R6.3 defence in depth: reject a proof that was issued for a DIFFERENT
+        # command before ANY state is mutated or a TOOL_EXECUTION envelope is
+        # minted. The authoritative check remains state_machine.check_7.
+        _submitted_proof = getattr(ev, "execution_proof", None)
+        if _submitted_proof is not None:
+            _mismatch = self._proof_command_mismatch(_submitted_proof, ev.command)
+            if _mismatch:
+                raise GateValidationError(
+                    "proof-to-evidence binding rejected: " + _mismatch
+                )
         if not strict and not simulated.strip():
             raise GateValidationError(
                 "strict=False requires an explicit 'simulated' label describing "
                 "why the evidence is internal/simulated (no real tool provenance)"
             )
+        # F-01: any labelled simulated/internal submission is permanently
+        # classified as non-authoritative before it reaches serialized state.
+        if simulated.strip():
+            ev.mark_simulated(simulated)
         spec = check_spec or self.check_specs.get(ev.check_id)
 
         # Central NOT_APPLICABLE validation: a target check id + registered,
@@ -850,7 +1479,88 @@ class GateController:
         # were registered at record time become staleness anchors).
         if not ev.input_hashes:
             ev.input_hashes = self.current_input_hashes()
+        prov_record = {
+            "evidence_class": ev.evidence_class,
+            "simulated_by": ev.simulated_by,
+        }
         self._state["evidence"][ev.evidence_id] = ev.to_dict()
+        self._state["evidence_provenance"][ev.evidence_id] = prov_record
+        # R4: bind provenance INTO the evidence integrity record. Any later
+        # edit of the evidence record or of either provenance marker in
+        # state.json breaks the binding and the evidence is treated as
+        # non-authoritative at evaluation time.
+        _ebind = self._evidence_integrity(
+            self._state["evidence"][ev.evidence_id], prov_record, ev.evidence_id
+        )
+        self._state["evidence_integrity"][ev.evidence_id] = _ebind
+        write_binding(self._state, DOMAIN_EVIDENCE, ev.evidence_id, _ebind)
+        # R6 Stage 2: also create a signed evidence envelope for the authoritative
+        # state machine. Provenance is fixed at creation from the trusted input;
+        # later ledger edits cannot relabel it (MAC verification fails).
+        with _PROOF_RECORD_LOCK:
+            try:
+                from .r6_authority import get_trust
+                from .provenance import make_envelope, Provenance
+                import hashlib as _hashlib
+                import json as _json
+                _trust = get_trust()
+                # R6.2: TOOL_EXECUTION is ONLY minted when the evidence carries a
+                # structural ExecutionProof from the managed boundary. Caller-supplied
+                # command/status/labels alone can never create an authorizing envelope.
+                _proof = getattr(ev, "execution_proof", None)
+                _authorizing = bool(_proof) and not simulated.strip()
+                if simulated.strip():
+                    _prov = Provenance.SIMULATED
+                elif _authorizing:
+                    _prov = Provenance.TOOL_EXECUTION
+                else:
+                    _prov = Provenance.OBSERVATION
+                # R6.3: authoritative digest material is derived from the RECORDED
+                # evidence (never from caller-supplied proof digest fields) and
+                # MAC-bound into the envelope, giving check_7/8/9 a real source.
+                _material = self._evidence_digest_material(ev)
+                _consumed_digest = ""
+                if _material["consumed"]:
+                    _consumed_digest = _hashlib.sha256(
+                        _json.dumps(_material["consumed"], sort_keys=True,
+                                    separators=(",", ":"), default=str).encode("utf-8")
+                    ).hexdigest()
+                _deps = _material["dependencies"]
+                _dep_digest = ""
+                if _deps:
+                    _dep_digest = _hashlib.sha256(
+                        _json.dumps(_deps, sort_keys=True, separators=(",", ":"),
+                                    default=str).encode("utf-8")
+                    ).hexdigest()
+                _env = make_envelope(
+                    evidence_id=ev.evidence_id, check_id=ev.check_id, gate_id="",
+                    provenance=_prov,
+                    execution_identity={
+                        "command": list(ev.command) if ev.command else [],
+                        "tool_versions": dict(ev.tool_versions or {}),
+                        # proof is inside the MAC-bound identity, so it cannot be
+                        # stripped or forged by later ledger edits
+                        "execution_proof": _proof,
+                        "candidate_digest": _material["candidate"],
+                        "consumed_digest": _consumed_digest,
+                        "dependency_digest": _dep_digest,
+                    },
+                    consumed_sha256=_consumed_digest,
+                    dependencies=tuple(
+                        sorted((str(k), str(v)) for k, v in _deps.items())
+                    ),
+                    status=str(ev.status.value),
+                    observed_utc=utc_now(),
+                    context={"session_id": _trust.context.session_id,
+                             "repo_id": _trust.context.repo_id,
+                             "revision": _trust.context.revision},
+                    trust=_trust,
+                )
+                self._state.setdefault("r6_evidence_envelopes", {})[ev.evidence_id] = (
+                    _env.to_dict()
+                )
+            except Exception:  # noqa: BLE001 - authoritative check fails closed later
+                pass
         idx = self._state["check_index"].setdefault(ev.check_id, [])
         idx.append(ev.evidence_id)
         if spec is not None or engineering_outcome is not None:
@@ -889,6 +1599,7 @@ class GateController:
         extraction_provenance: str = "",
         strict: bool = True,
         simulated: str = "",
+        execution_proof: dict | None = None,
     ) -> Evidence:
         """Convenience API: build + validate + record a check result in one call.
 
@@ -909,6 +1620,15 @@ class GateController:
             library_provenance=library_provenance,
             extraction_provenance=extraction_provenance,
         )
+        if execution_proof is not None:
+            # R6.3 defence in depth: reject at the caller boundary BEFORE a
+            # TOOL_EXECUTION envelope is minted for a mismatched command.
+            _mismatch = self._proof_command_mismatch(execution_proof, command)
+            if _mismatch:
+                raise GateValidationError(
+                    "proof-to-evidence binding rejected: " + _mismatch
+                )
+            ev.execution_proof = execution_proof
         return self.record_evidence(
             ev, engineering_outcome=engineering_outcome, check_spec=spec,
             strict=strict, simulated=simulated,
@@ -1009,7 +1729,12 @@ class GateController:
                 raise ValueError(f"invalid waiver expiry {waiver.expires_utc!r}") from exc
         if not waiver.input_revision and self.current_input_hashes():
             waiver.input_revision = self.current_input_hashes()
-        self._state["waivers"].append(waiver.to_dict())
+        _w = waiver.to_dict()
+        self._state["waivers"].append(_w)
+        write_binding(
+            self._state, DOMAIN_WAIVER, waiver.waiver_id,
+            self.ledger_integrity.mac(DOMAIN_WAIVER, _w, record_id=waiver.waiver_id),
+        )
         self._save()
         return waiver
 
@@ -1026,6 +1751,13 @@ class GateController:
         current = self.current_input_hashes()
         out: list[Waiver] = []
         for w in self._state["waivers"]:
+            # R6: a waiver is an authorization decision; require its external-key
+            # MAC or ignore it (fail closed against ledger-only forgery).
+            _wmac = read_binding(self._state, DOMAIN_WAIVER, str(w.get("waiver_id", "")))
+            if not self.ledger_integrity.verify(
+                DOMAIN_WAIVER, w, _wmac, record_id=str(w.get("waiver_id", ""))
+            ):
+                continue
             obj = Waiver.from_dict(w)
             if not obj.covers(gate_id, check_id):
                 continue
@@ -1051,6 +1783,9 @@ class GateController:
     ) -> GateDecision:
         self._require_active()
         self._assert_no_cycles()  # authoritative dependency graph is cycle-free
+        # R4: record the authoritative gate definition from this explicit
+        # evaluation. All (re-)evaluations use it, never gate_history.checks.
+        self._record_gate_definition(gate_id, required_checks, required_view, upstream_gates)
         return self._evaluate_gate(
             gate_id, required_checks, stage=stage, required_view=required_view,
             upstream_gates=upstream_gates, visiting=frozenset(),
@@ -1093,9 +1828,17 @@ class GateController:
             chain = " -> ".join(list(visiting) + [gate_id])
             raise GateDefinitionError(f"dependency cycle detected: {chain}")
 
-        spec = self.gate_specs.get(gate_id)
-        # The registered spec is authoritative: callers cannot omit checks.
-        effective = list(spec.required_checks) if spec else list(required_checks)
+        # R4: resolve the AUTHORITATIVE required-check set. A registered GateSpec
+        # wins; otherwise the definition recorded from the most recent explicit
+        # evaluation is used. The cached gate_history summary is NEVER a source
+        # of required_checks.
+        spec, definition = self._source_of_truth(gate_id)
+        if spec is not None:
+            effective = list(spec.required_checks)
+        elif definition is not None:
+            effective = list(definition["required_checks"])
+        else:
+            effective = list(required_checks)
         if not effective:
             raise GateDefinitionError(
                 f"gate {gate_id!r} has an empty required-check list"
@@ -1106,7 +1849,11 @@ class GateController:
             pass
 
         here = visiting | {gate_id}
-        view = required_view or (spec.required_view if spec else None)
+        view = (
+            required_view
+            or (spec.required_view if spec else None)
+            or (definition or {}).get("required_view")
+        )
         upstream: list[str] = list(upstream_gates)
         if spec:
             for up in spec.upstream:
@@ -1120,6 +1867,7 @@ class GateController:
         na_visible: list[dict] = []
         waived_checks: list[str] = []
         na_checks: list[str] = []  # valid N/A checks -> disposition NOT_APPLICABLE
+        simulated_checks: list[str] = []  # F-01: non-authoritative PASS sources
 
         # Registered input requirements must be registered and bound.
         if spec:
@@ -1145,22 +1893,65 @@ class GateController:
                     "reason": "upstream gate has no PASS decision",
                 }
                 continue
-            hist_checks = hist.get("required_checks") or [
-                k for k in hist.get("checks", {}) if not k.startswith("upstream:")
-            ]
-            hist_view = hist.get("required_view")
-            re_dec = self._evaluate_gate(
-                up, hist_checks, stage=hist.get("stage", ""),
-                required_view=hist_view,
-                upstream_gates=hist.get("upstream_gates", ()),
-                visiting=here,
-            )
-            if not re_dec.passed:
-                blocking.append(f"upstream gate {up} fails re-evaluation: {re_dec.reason}")
+            # R4 / A3-F1: the cached gate_history entry is consulted ONLY to
+            # detect whether the gate was ever evaluated. Its required_checks,
+            # required_view and upstream_gates are DESCRIPTIVE and are NEVER
+            # used for authorization. Re-derive them from authoritative gate
+            # definitions; a gate with cached history but no definition fails
+            # closed rather than trusting the mutable summary.
+            up_spec, up_definition = self._source_of_truth(up)
+            if up_spec is not None:
+                up_checks = list(up_spec.required_checks)
+                up_view = up_spec.required_view
+                up_upstream = list(up_spec.upstream)
+            elif up_definition is not None:
+                up_checks = list(up_definition["required_checks"])
+                up_view = up_definition.get("required_view")
+                up_upstream = list(up_definition.get("upstream") or ())
+            else:
+                if up in self._unverifiable_definitions:
+                    reason = (
+                        f"upstream gate {up} has an unverifiable/invalid gate "
+                        "definition binding; refusing to authorize"
+                    )
+                else:
+                    reason = (
+                        f"upstream gate {up} has no authoritative gate definition; "
+                        "refusing to authorize from cached history"
+                    )
+                blocking.append(reason)
                 check_report[f"upstream:{up}"] = {
                     "status": "BLOCKED",
-                    "reason": re_dec.reason,
+                    "reason": reason,
+                    "qualified": False,
+                }
+                continue
+            re_dec = self._evaluate_gate(
+                up, up_checks, stage=hist.get("stage", ""),
+                required_view=up_view,
+                upstream_gates=up_upstream,
+                visiting=here,
+            )
+            # R2-03: authorization is keyed on ``qualified``, NOT on the
+            # PASS-shaped ``passed`` property. A SIMULATED_PASS (or any other
+            # non-qualified PASS, e.g. an unauthoritative legacy record) keeps
+            # ``decision=PASS`` for reporting continuity but must hard-block the
+            # dependent gate. Genuine CLEAN_PASS / WAIVED_PASS / validated
+            # NOT_APPLICABLE upstreams remain qualified and still authorize.
+            if not re_dec.qualified:
+                detail = re_dec.reason
+                if re_dec.decision == "PASS" and re_dec.disposition != "CLEAN_PASS":
+                    detail = (
+                        f"upstream gate {up} is not production-qualified "
+                        f"(disposition={re_dec.disposition}, "
+                        f"decision={re_dec.decision})"
+                    )
+                blocking.append(f"upstream gate {up} fails re-evaluation: {detail}")
+                check_report[f"upstream:{up}"] = {
+                    "status": "BLOCKED",
+                    "reason": detail,
                     "disposition": re_dec.disposition,
+                    "qualified": re_dec.qualified,
                 }
 
         for check_id in effective:
@@ -1168,6 +1959,32 @@ class GateController:
             ev = self.latest_evidence(check_id)
             waivers = self.waivers_for(gate_id, check_id)
             entry: dict = {"waived": [w.to_dict() for w in waivers]}
+
+            # F-01: provenance is authoritative only when BOTH the evidence
+            # record and the independent persisted provenance map agree it is
+            # tool-derived. Either marker is enough to make it non-authoritative.
+            # R4 / A3-F2: the evidence's own integrity binding is now the primary
+            # authority. Because provenance is part of the bound payload, flipping
+            # BOTH markers in state.json no longer relabels simulated evidence:
+            # the binding mismatches and the record is non-authoritative.
+            prov = (
+                (self._state.get("evidence_provenance") or {}).get(ev.evidence_id) or {}
+            ) if ev is not None else {}
+            integrity_ok = self._integrity_ok(ev)
+            ev_simulated = bool(
+                ev is not None
+                and (
+                    not integrity_ok
+                    or ev.is_simulated
+                    or str(prov.get("evidence_class", "TOOL") or "TOOL").upper() == "SIMULATED"
+                    or prov.get("simulated_by")
+                )
+            )
+            if ev_simulated:
+                entry["evidence_class"] = "SIMULATED"
+                entry["simulated_by"] = ev.simulated_by or str(prov.get("simulated_by", ""))
+                if not integrity_ok:
+                    entry["integrity"] = "INVALID"
 
             if ev is None:
                 entry.update(
@@ -1341,6 +2158,29 @@ class GateController:
                 check_id in NON_WAIVABLE_CHECKS or (cspec and not cspec.waivable)
             )
 
+            # F-07 defense in depth: re-validate N/A applicability at evaluation
+            # time. A tampered or legacy serialized record cannot smuggle a rule
+            # that is not bound to this check (e.g. NO-MACROS for physical DRC)
+            # past the authoritative recording boundary.
+            if status is Status.NOT_APPLICABLE and not non_waivable:
+                try:
+                    validate_applicability_for_check(
+                        ev.applicability_reason or ev.reason, check_id, self.design_facts
+                    )
+                except ApplicabilityError as exc:
+                    status = Status.FAIL
+                    entry["reason"] = f"invalid NOT_APPLICABLE record: {exc}"
+                    entry["applicability_error"] = str(exc)
+                    blocking.append(f"{check_id}: invalid NOT_APPLICABLE record: {exc}")
+                    check_report[check_id] = {
+                        **entry,
+                        "status": status.value,
+                        "evidence_id": ev.evidence_id,
+                        "analysis_view": ev.analysis_view,
+                        "exit_code": ev.exit_code,
+                    }
+                    continue
+
             # U-A: non-waivable checks can NEVER be NOT_APPLICABLE. A persisted
             # legacy N/A record must be converted to a hard-blocking FAIL so no
             # gate can pass on an applicability claim for a functional proof.
@@ -1406,11 +2246,22 @@ class GateController:
                 blocking.append(f"{check_id}: {status.value}")
             if waived:
                 waived_checks.append(check_id)
+            # F-01: only a PASS derived from simulated/internal evidence is a
+            # non-authoritative SIMULATED_PASS. A validated N/A keeps its own
+            # disposition (the simulated marker stays visible on the check).
+            if ev_simulated and status is Status.PASS:
+                simulated_checks.append(check_id)
+                entry["simulated_pass"] = True
 
         decision = "PASS" if not blocking else "BLOCKED"
         if blocking:
             disposition = "BLOCKED"
             reason = "; ".join(blocking)
+        elif simulated_checks:
+            # F-01: a PASS that relies on caller-labelled simulated/internal
+            # evidence is visibly non-authoritative and never qualifies.
+            disposition = "SIMULATED_PASS"
+            reason = "all required checks PASS"
         elif waived_checks:
             disposition = "WAIVED_PASS"
             reason = "PASS with waived checks: " + ", ".join(waived_checks)
@@ -1422,6 +2273,25 @@ class GateController:
             disposition = "CLEAN_PASS"
             reason = "all required checks PASS"
 
+        qualified = decision == "PASS" and not simulated_checks
+        # R6 Stage 2: the authoritative state machine is the ONLY authorization
+        # source. A PASS-shaped legacy boolean cannot override it.
+        if qualified:
+            try:
+                from .r6_authority import authoritative_qualification
+                # Only checks that actually carry authorization weight count.
+                # Waived / N-A / simulated checks are deliberately non-authorizing
+                # under policy and must not drag an otherwise clean gate down.
+                _eids = [
+                    v.get("evidence_id") for cid, v in check_report.items()
+                    if isinstance(v, dict) and v.get("evidence_id")
+                    and cid not in waived_checks and cid not in na_checks
+                    and cid not in simulated_checks
+                ]
+                if not authoritative_qualification(self, _eids):
+                    qualified = False
+            except Exception:  # noqa: BLE001
+                qualified = False
         gd = GateDecision(
             gate_id=gate_id,
             decision=decision,
@@ -1432,6 +2302,8 @@ class GateController:
             disposition=disposition,
             waived_checks=waived_checks,
             na_checks=na_checks,
+            simulated_checks=simulated_checks,
+            qualified=qualified,
         )
         self._state["gate_history"].append(
             {
@@ -1462,8 +2334,10 @@ class GateController:
                 gate_id, checks, stage=stage, required_view=required_view,
                 upstream_gates=upstream,
             )
-            if not gd.passed:
-                reasons.append(f"{gate_id}: {gd.reason}")
+            # F-01: SIMULATED_PASS keeps decision=PASS for reporting continuity,
+            # but it is not authoritative and cannot authorize a downstream stage.
+            if not gd.qualified:
+                reasons.append(f"{gate_id}: {gd.reason} ({gd.disposition})")
         return (not reasons), reasons
 
     # -- cancellation / restart ----------------------------------------------
@@ -1508,4 +2382,9 @@ class GateController:
             "gate_history": history,
             "restart_history": list(self._state["restart_history"]),
             "last_gate_disposition": last.get("disposition", "NONE"),
+            # R5: trust-boundary observability. key source is "environment" only
+            # when provisioned outside the ledger; unverifiable definitions are
+            # never used for authorization.
+            "ledger_key_source": self._ledger_key_source,
+            "unverifiable_gate_definitions": sorted(self._unverifiable_definitions),
         }

@@ -88,11 +88,14 @@ def write_targets(tmp_path, corners, name="targets.json"):
 
 def record_sta_pass(tmp_path, state, report):
     """Record a fully-provenanced PASS so gate-evaluate can reach PASS."""
+    import r63_cli_proof_helper as _ph
+    pf = str(tmp_path / "proof.json")
+    _ph.write_proof_file(pf)
     return run_cli(
         "gate-record", "--state", state, "--check", "sta", "--status", "PASS",
         "--reason", "meets target", "--command", "sta -exit", "--exit-code", "0",
         "--view", "ROUTED_EXTRACTED", "--report", report,
-        "--tool-version", "sta=3.1",
+        "--tool-version", "sta=3.1", "--proof-file", pf,
     )
 
 
@@ -181,7 +184,9 @@ def test_blocked_gate_exits_nonzero_with_json_preserved(tmp_path):
     assert data["checks"]["sta"]["status"] == "NOT_RUN"
 
 
-def test_passing_gate_exits_zero(tmp_path):
+def test_passing_gate_exits_zero(tmp_path, monkeypatch):
+    # R6: cross-process evidence verification requires the external trust root.
+    monkeypatch.setenv("ASSISTANT_LEDGER_KEY", "r6-cli-cross-process-key")
     report = write_sta_report(tmp_path, "0.50")
     state = tmp_path / "state.json"
     rec = record_sta_pass(tmp_path, state, report)
@@ -432,7 +437,9 @@ def test_cli_na_registered_non_waivable_spec_rejected(tmp_path):
     assert saved["evidence"] == {}
 
 
-def test_cli_na_valid_fact_records_not_applicable_disposition(tmp_path):
+def test_cli_na_valid_fact_records_not_applicable_disposition(tmp_path, monkeypatch):
+    # R6: cross-process evidence verification requires the external trust root.
+    monkeypatch.setenv("ASSISTANT_LEDGER_KEY", "r6-cli-cross-process-key")
     state = tmp_path / "na_valid.json"
     proc = _na_record(state, "upf_check", "--design-fact", "has_upf=False")
     assert proc.returncode == EXIT_OK, proc.stdout + proc.stderr
@@ -441,8 +448,21 @@ def test_cli_na_valid_fact_records_not_applicable_disposition(tmp_path):
     assert ev["status"] == "NOT_APPLICABLE"
     assert saved["design_facts"]["has_upf"]["value"] is False
 
+    # R6.3: add a proof-bearing PASS so the N/A gate can authorize production;
+    # the N/A disposition assertions below are unchanged.
+    import r63_cli_proof_helper as _ph
+    pf = str(tmp_path / "proof.json")
+    _ph.write_proof_file(pf)
+    rpt = tmp_path / "na_proof.rpt"
+    rpt.write_text("WNS: 0.5", encoding="utf-8")
+    rec2 = run_cli("gate-record", "--state", state, "--check", "na_proof",
+                   "--status", "PASS", "--reason", "meets target",
+                   "--command", "sta -exit", "--exit-code", "0",
+                   "--view", "ROUTED_EXTRACTED", "--report", str(rpt),
+                   "--tool-version", "sta=3.1", "--proof-file", pf)
+    assert rec2.returncode == EXIT_OK, rec2.stdout + rec2.stderr
     gate = run_cli("gate-evaluate", "--state", state, "--gate", "na_gate",
-                   "--required", "upf_check")
+                   "--required", "upf_check,na_proof")
     assert gate.returncode == EXIT_OK, gate.stdout + gate.stderr
     data = stdout_json(gate)
     assert data["decision"] == "PASS"
@@ -450,8 +470,10 @@ def test_cli_na_valid_fact_records_not_applicable_disposition(tmp_path):
     assert data["disposition"] != "CLEAN_PASS"
 
 
-def test_cli_substantive_pass_with_provenance_still_succeeds(tmp_path):
+def test_cli_substantive_pass_with_provenance_still_succeeds(tmp_path, monkeypatch):
     """Strict-by-default recording keeps real tool PASS evidence working."""
+    # R6: cross-process evidence verification requires the external trust root.
+    monkeypatch.setenv("ASSISTANT_LEDGER_KEY", "r6-cli-cross-process-key")
     report = write_sta_report(tmp_path, "0.50")
     state = tmp_path / "pass_state.json"
     rec = record_sta_pass(tmp_path, state, report)

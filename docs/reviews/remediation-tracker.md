@@ -80,3 +80,81 @@ Source: `docs/reviews/second-review.md`. Baseline commit `0a9eb57`, clean tree e
 | SR-10 | Documentation/qualification matrix cleanup | S3 | README/docs/reviews | stale/contradictory claims | one current matrix tied to commit/run IDs; dated history | doc audit | FIXED - VERIFIED |
 
 - 2026-11-18 (second review): SR-01..SR-10 remediated and verified. Full suite 304 passed; framework 47/0/0; two isolated baselines PASS with identical stage maps and normalized netlist/SDC/SPEF/STA semantics. Evidence: D:\audit\second_review_evidence_20261118\; independent final audit READY (FINAL_AUDIT_FOLLOWUP.md).
+
+
+## Third-review tracker (2026-11-19)
+
+Source: the external review of `45e4251...`; verified against current checkout `d8f2117...`
+(tree `e9beaa2...`). Full detail: `docs/reviews/third-review.md`,
+`docs/reviews/third-review-validation.md`.
+
+| ID | Finding | Severity | Affected paths | Verified? | Root cause | Remediation | Regressions | Disposition |
+|---|---|---|---|---|---|---|---|---|
+| TR-01 | NO-MACROS wrongly exempts physical DRC | P1 | `assistant/eco.py`, `assistant/controller.py`, ECO tests | YES | static N/A reason per change class, no physical scope facts | `EcoStage`/`EcoChangeScope`/`applicability_for`; new `NA-RULE:NO-PHYSICAL-IMPLEMENTATION`; fact-corroborated; physical implementation requires fresh DRC PASS; power intent BLOCKED | 5 new tests (routed DRC FAIL, netlist-only pending, NO-MACROS bypass, missing capability, prose) | FIXED - VERIFIED |
+| TR-02 | `evaluate()` can mutate candidate after verification | P1 | `assistant/eco.py` | YES | no re-hash/re-gate/revision binding after evaluation | `CandidateRevision`, pre/post-eval snapshot compare, `_pre_acceptance_revalidation`, evidence revalidation, downstream revision binding, single-writer doc | 7 new tests (declared/undeclared/SDC/report mutation, dependency change, cancellation, persistence failure, downstream revision) | FIXED - VERIFIED |
+| TR-03 | `duration_s` comparison is not a real deadline | P2 | `assistant/eco.py`, `assistant/runner.py` | YES | synchronous unbounded `list(verify())`; self-reported duration; no clock | monotonic deadline, streamed evidence, `VerificationContext`, process-tree termination, measured duration, incomplete/late-mutation flags | 7 new tests (slow, partial, forged/omitted duration, cooperative cancel, late worker, real process tree) | FIXED - VERIFIED |
+| TR-04 | Real runner not exercised by tests | P2 | `regression/run_regression.ps1`, `tests/test_runner_integration_simulated.py` | YES | Python mirror + text grep only | additive DI seams (production defaults unchanged); real-runner integration with fake executables and launch sentinels | 9 new tests (full pass, zero-exit FAIL, nonzero exit, missing acceptance, absent check, persistence failure, partial stage, ValidateOnly, resume invalidation) | FIXED - VERIFIED |
+
+- 2026-11-19 (third review): all four findings verified and remediated. Baseline before remediation 323 passed / 1 stale guard; after 353 passed (324 original + 20 TR-01/02/03 + 9 TR-04). Internal numerical rating intentionally not assigned; independent reviewer decides.
+
+## Third-review remediation round 2 (2026-11-19)
+
+Source identity at start: `d8f2117` / tree `e9beaa22`, 19 uncommitted paths.
+Authoritative inputs: `D:\audit\third_independent_review_20261119\FINDINGS.md`.
+
+| ID | Severity | Disposition | Fix |
+|---|---|---|---|
+| F-02 | P0 | FIXED AND VERIFIED | pre-verification snapshot + evidence binding + post-verify/post-eval/final snapshot checks |
+| F-03 | P0 | FIXED AND VERIFIED | single overall monotonic deadline through acceptance/persistence/downstream |
+| F-04 | P0 | PARTIALLY FIXED | worker join + double rehash + `worker_uncontained` flag; non-cooperative Python threads cannot be forcibly killed |
+| F-01 | P1 | FIXED AND VERIFIED | persisted evidence_class/SIMULATED_PASS, qualified=false, CLI exit on qualified |
+| F-05 | P1 | FIXED AND VERIFIED | corroborated scope source + physical-artifact contradiction check |
+| F-06 | P1 | FIXED AND VERIFIED | scope change_class must match submitted class |
+| F-07 | P1 | FIXED AND VERIFIED | applicability rule binding; NO-MACROS cannot exempt physical checks |
+| F-08 | P1 | FIXED AND VERIFIED | cancellation checked at every acceptance boundary |
+| F-09 | P1 | FIXED AND VERIFIED | downstream failure amends one record; no contradictory PASS+FAIL |
+| F-10 | P1 | PARTIALLY FIXED | pinned-dependency snapshot hashed/revalidated; only pins-listed collateral covered |
+| F-11 | P1 | FIXED AND VERIFIED | final snapshot before commit and before downstream |
+| F-12 | P1 | PARTIALLY FIXED | managed spawn checks deadline/cancellation at boundaries; in-flight cancellation remains cooperative |
+| F-13 | P1 | PARTIALLY FIXED | tree termination enforced for direct child tree; detached/WSL2 grandchildren not universally containable |
+| F-14 | P1 | FIXED AND VERIFIED | ValidateOnly accepts VALIDATION_PASS prereq and validates full graph |
+| F-15 | P1 | FIXED AND VERIFIED | invalidation map consumed at both resume decision points |
+| F-16 | P1 | NOT TESTED / DEFERRED | evidence reconstruction package produced; independent clone verification belongs to next audit |
+
+Full suite: 383 passed. F-17..F-28 (P2/P3) preserved for a subsequent controlled pass.
+
+## Third-review remediation round 3 (2026-11-19) — FINAL
+
+All eight round-2 findings remediated and independently verified by lead (`LOGS/LEAD_VERIFICATION.txt`).
+
+| ID | Disposition | Fix |
+|---|---|---|
+| R2-01 | FIXED AND VERIFIED | `_AcceptanceGuard`: irreversible deadline/cancel latch through persistence + downstream; single consistent terminal record |
+| R2-02 | FIXED AND VERIFIED | `_dependency_snapshot()` handles real list schema (22 collateral + manifest = 23 keys); fail closed on malformed/missing/traversal/symlink |
+| R2-03 | FIXED AND VERIFIED | upstream authorization uses `re_dec.qualified`; CLI fail-closed on qualified; SIMULATED_PASS non-authorizing |
+| R2-04 | FIXED AND VERIFIED | immutable accepted snapshot handed to downstream; rehash after downstream; fail closed on mutation |
+| R2-05 | PARTIALLY FIXED | `spawn()` uses `run_managed()` with confirmed process-tree termination for supported paths; cooperative/unsupported paths classified honestly |
+| R2-06 | FIXED AND VERIFIED | complete 200-file source bundle + zip; clean reconstruction 0 hash mismatches; 438 tests pass from reconstructed checkout |
+| R2-07 | PARTIALLY FIXED | production requires corroborated stage-fact source; post-apply physical re-derivation; broadened artifact scan; caller prose still influences simulated-labelled tests by design |
+| R2-08 | PARTIALLY FIXED | managed execution integrated into `VerificationContext.spawn()` production path; WSL2/detached paths remain unconfirmed by design |
+
+Full suite: 438 passed (production + reconstructed checkout). No commit/push/publication.
+
+## Fourth-review remediation (Round 4, 2026-11-20) — P1 closure
+
+All nine P1 findings from Independent Audit Round 3 remediated and lead-verified.
+
+| ID | Disposition | Fix |
+|---|---|---|
+| A1-F1 | FIXED AND VERIFIED | final guard.check after integrity rehash; deadline in final window → single INCONCLUSIVE/True record |
+| A4-B | FIXED AND VERIFIED | transaction_token record identity; _amend_last replaces own record by token; no contradictory PASS/INCONCLUSIVE |
+| A4-A | FIXED AND VERIFIED (post-hoc) | final authorization boundary rehashes candidate+dependencies+immutable copy; honest last-instruction residual |
+| A4-C / A2-01 | FIXED AND VERIFIED | dependency revision re-established from pinned snapshot and compared at acceptance; post-acceptance mutation → NON_QUALIFYING |
+| A5-A | FIXED AND VERIFIED | verification_tools= → managed_tool_verification() → ctx.spawn() → run_managed(): real production call path |
+| A5-B | CLASSIFIED (not prevented) | WSL2 descendants unconfirmable from host; explicit authorization_safe=False/wsl_uncontained gate; fail closed |
+| A5-C | PARTIALLY FIXED | ThreadContainment quiesce + rehash detects late writes; uncooperative threads cannot be forcibly killed (detection only) |
+| A6-01 | FIXED AND VERIFIED | content/dimension-based PhysicalAssessment (GDSII/OASIS/gzip magics, fail-closed uncertain); bypass extensions now FAIL |
+| A3-F1 | FIXED AND VERIFIED | authoritative gate_definitions + HMAC provenance binding; cached required_checks tamper fails closed |
+
+Full suite and cross-workstream matrix results in `D:\audit\third_remediation_round4_20261120\`.
+No commit/push/publication. No readiness declaration.

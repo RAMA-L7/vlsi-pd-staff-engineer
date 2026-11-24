@@ -103,7 +103,9 @@ def test_cli_invalid_na_reason_unknown_rule_fails(tmp_path):
     assert not state.exists()
 
 
-def test_cli_na_valid_reason_succeeds_with_validated_design_fact(tmp_path):
+def test_cli_na_valid_reason_succeeds_with_validated_design_fact(tmp_path, monkeypatch):
+    # R6: cross-process evidence verification requires the external trust root.
+    monkeypatch.setenv("ASSISTANT_LEDGER_KEY", "r6-cli-cross-process-key")
     state = tmp_path / "state.json"
     proc = run_cli(*record_cmd(
         state, "upf_check", "NOT_APPLICABLE",
@@ -118,9 +120,22 @@ def test_cli_na_valid_reason_succeeds_with_validated_design_fact(tmp_path):
     assert ev["applicability_reason"].startswith("NA-RULE:NO-UPF")
     assert data["design_facts"]["has_upf"]["value"] is False
 
+    # R6.3: add a proof-bearing PASS so the N/A gate can authorize production;
+    # the N/A disposition assertions below are unchanged.
+    import r63_cli_proof_helper as _ph
+    pf = str(tmp_path / "proof.json")
+    _ph.write_proof_file(pf)
+    rpt = tmp_path / "na_proof.rpt"
+    rpt.write_text("WNS: 0.5", encoding="utf-8")
+    rec2 = run_cli(*record_cmd(
+        state, "na_proof", "PASS", "--command", "sta -exit", "--exit-code", "0",
+        "--view", "ROUTED_EXTRACTED", "--report", str(rpt),
+        "--tool-version", "sta=3.1", "--proof-file", pf,
+    ))
+    assert rec2.returncode == 0, rec2.stdout + rec2.stderr
     # A validated N/A is non-blocking but is NOT a clean PASS.
     ev2 = run_cli("gate-evaluate", "--state", state, "--gate", "lp_gate",
-                  "--required", "upf_check")
+                  "--required", "upf_check,na_proof")
     assert ev2.returncode == 0, ev2.stdout + ev2.stderr
     result = json.loads(ev2.stdout)
     assert result["decision"] == "PASS"
@@ -182,16 +197,22 @@ def test_cli_full_provenance_stored_and_gate_passes(tmp_path):
     assert gd.checks["sta"]["status"] == "PASS"
 
 
-def test_cli_substantive_record_evaluates_pass_via_cli(tmp_path):
+def test_cli_substantive_record_evaluates_pass_via_cli(tmp_path, monkeypatch):
     """No input-hash anchors -> pure CLI gate-evaluate also reaches PASS."""
+    # R6: cross-process evidence verification requires the external trust root.
+    monkeypatch.setenv("ASSISTANT_LEDGER_KEY", "r6-cli-cross-process-key")
     rpt = tmp_path / "sta.rpt"
     rpt.write_text("WNS: 0.5", encoding="utf-8")
     state = tmp_path / "state.json"
+    import r63_cli_proof_helper as _ph
+    pf = str(tmp_path / "proof.json")
+    _ph.write_proof_file(pf)
     rec = run_cli(*record_cmd(
         state, "sta", "PASS",
         "--command", "sta -exit", "--exit-code", "0",
         "--view", "ROUTED_EXTRACTED",
         "--report", str(rpt), "--tool-version", "sta=3.1",
+        "--proof-file", pf,
     ))
     assert rec.returncode == 0, rec.stdout + rec.stderr
     ev = next(iter(json.loads(state.read_text(encoding="utf-8"))["evidence"].values()))

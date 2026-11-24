@@ -241,6 +241,13 @@ Missing any item = handoff is incomplete = next stage cannot start.
 
 10. **Orchestrator returns the engineering result** — Overall stage status is determined by check results. If all stages pass, the regression proceeds. If any stage fails, the three-fix rule or forensic debugger is invoked.
 
+### ECO applicability, candidate binding and deadlines (third review, 2026-11-19)
+
+- **Physical ECO applicability is fact-based.** `assistant/eco.py` decides physical-check applicability from a recorded `EcoChangeScope` (target stage and `physical_implementation_present`), never from the absence of macros or the caller's prose. A placed/routed standard-cell ECO requires a fresh DRC PASS even when `has_macros=False`; only netlist-only exploration may declare `NA-RULE:NO-PHYSICAL-IMPLEMENTATION`, corroborated by a registered design fact. Power-intent changes on a physical implementation are **BLOCKED/UNSUPPORTED** (no verifier exists). Deferred physical qualification is never reported as PASS.
+- **The accepted candidate is the exact candidate that was verified.** `evaluate()` is read-only; the workspace is re-hashed and all evidence revalidated immediately before acceptance; an immutable `CandidateRevision` is bound to the evidence and passed downstream. Post-verification mutation, stale evidence, cancellation or persistence failure rejects, rolls back, verifies the restore and blocks downstream.
+- **Verification deadlines are real.** A monotonic clock bounds the whole verification phase; provider-reported `duration_s` is informational and cannot enforce or defeat the deadline. Partial evidence is preserved on timeout, process trees are terminated on supported Windows/WSL paths, and late writes after rollback are detected. Arbitrary non-cooperative Python callbacks cannot be forcibly killed in-process; those results are marked INCONCLUSIVE/BLOCKED, not claimed as hard-deadline successes.
+- **The real runner is tested.** `tests/test_runner_integration_simulated.py` invokes the actual `regression/run_regression.ps1` with fake tools through additive, default-preserving injection seams, proving scheduling, dependency blocking, acceptance parsing, persistence, resume and ValidateOnly against real reports and launch sentinels. See `docs/reviews/third-review.md` and `docs/reviews/third-review-validation.md`.
+
 ### Automated executor vs AI-agent orchestration (authoritative)
 
 The lifecycle narrative above describes the *intended discipline*, not an assertion that live AI agents executed the recorded runs. Concretely:
@@ -877,3 +884,65 @@ This README has been upgraded from a general project introduction into a profess
 - **L**: Quick start — prerequisites and setup with configurable machine-specific paths; no credentials or tokens are exposed; host-specific paths are validated-host examples and are parameterized through environment overrides
 
 All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Present-tense "shell blocked" claims have been removed; the Code Mode shell issue is documented only as historical context (Phases 14–17A). The documented baseline command runs today (16/16 stages PASS on test_counter; `baseline_20261116` / `_r2`, `final_r3` / `final_r4`); current run evidence is in `docs/reviews/remediation-report.md` and the post-publication validation record (`docs/reviews/post-publication-validation.md`). Design-specific results are correctly attributed to test_counter (verified execution) vs. soc_ctrl (full run executed in Milestone 1D, `run_pub_m1d_soc_ctrl_full`; FAILED QUALIFICATION with STA/LVS failures retained; no signoff).
+
+### Third-review remediation round 2 — acceptance and qualification contracts (2026-11-19)
+
+Independent audit findings F-02..F-16 were remediated locally (uncommitted; no push).
+Key contracts now enforced:
+
+- **Candidate identity:** the workspace is snapshotted *before* verification; every fresh
+  evidence record is bound to that revision, re-hashed before acceptance and again before
+  downstream execution. A verifier or evaluator that mutates a declared/undeclared file,
+  SDC, report or dependency is rejected and rolled back. Downstream receives only the
+  accepted immutable revision. `assistant/eco.py`.
+- **Deadlines:** a single monotonic deadline covers verification, evaluation, final
+  revalidation, persistence and downstream dispatch. Process trees are terminated on the
+  supported Windows/WSL path (`taskkill /T` / `killpg`); late writes after rollback are
+  detected and an uncontained worker is reported explicitly, never claimed as contained.
+  `assistant/eco.py`, `assistant/runner.py`.
+- **ECO applicability:** scope class must match the submitted class and be backed by a
+  corroborated source; a netlist-only claim is rejected when physical artifacts exist.
+  Standard-cell placed/routed changes require fresh physical evidence; NO-MACROS cannot
+  exempt physical checks; missing capabilities BLOCK qualification.
+- **Simulated vs production:** simulated/internal evidence is persisted with
+  `evidence_class=SIMULATED`, yields `SIMULATED_PASS` with `qualified=false`, and cannot
+  authorize a production gate or `gate-evaluate` exit 0. `assistant/controller.py`,
+  `assistant/evidence.py`, `assistant/cli.py`.
+- **Runner:** ValidateOnly evaluates the whole applicable graph; descendant invalidation
+  changes actual execution authorization on resume; final acceptance per-check statuses,
+  run/design binding and freshness are enforced. `regression/run_regression.ps1`.
+
+See `docs/reviews/third-review-validation.md` and
+`D:\audit\third_remediation_20261119\REMEDIATION_REPORT.md`.
+
+### Round-3 acceptance lifecycle and reconstruction (2026-11-19)
+
+- Deadline/cancellation are irreversible qualification invalidation: once invalidated, no
+  callback, persistence retry or downstream operation can restore PASS; all durable records
+  agree on one terminal state.
+- Every qualification-relevant pinned dependency (22 collateral files + manifest) is hashed
+  into the authoritative revision and revalidated at acceptance; incomplete declarations fail closed.
+- Simulated evidence (SIMULATED_PASS) never authorizes production downstream execution;
+  `gate-evaluate` exits nonzero and `can_enter_stage` refuses it.
+- Downstream receives a verified immutable candidate snapshot; any mutation is fail-closed.
+- Managed execution enforces real monotonic deadlines with confirmed process-tree termination
+  on supported Windows paths; cooperative/unsupported paths are explicitly classified, never
+  claimed as hard containment.
+- A complete reconstructable source bundle (200 files + SHA256 manifest + diff + reproduction)
+  is provided under `D:\audit\third_remediation_round3_20261119\RECONSTRUCTION\`.
+See `docs/reviews/remediation-tracker.md` and the round-3 evidence package. No readiness claim.
+
+### Round-4 acceptance integrity and containment (2026-11-20)
+
+- One authoritative, irreversible terminal acceptance decision binds candidate revision, evidence,
+  dependency snapshot, applicability, deadline and downstream authorization; transaction tokens
+  prevent contradictory durable records under re-entrancy.
+- Physical applicability uses content-based, fail-closed detection (GDSII/OASIS/gzip magics,
+  uncertain classification); unscanned extensions no longer qualify as netlist-only.
+- Simulated evidence cannot authorize production gates; gate definitions and provenance are
+  authoritative and integrity-bound; cached/tampered state fails closed.
+- Managed execution is wired into a real production verification path with explicit containment
+  classification; WSL2 descendants and uncooperative Python threads are detected/classified, not
+  claimed as prevented.
+See `docs/reviews/remediation-tracker.md` and `D:\audit\third_remediation_round4_20261120\`.
+No readiness claim.

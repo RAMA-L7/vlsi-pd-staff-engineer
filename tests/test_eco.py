@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from assistant.controller import GateController, RESTRICTED_CHANGE_CLASSES
+from assistant.eco import CHANGE_CLASS_POLICY, EcoChangeScope, EcoStage, PHYSICAL_DRC_NA_REASON
 from assistant.eco import (
     Authorization,
     EcoAuthorizationError,
@@ -19,10 +20,7 @@ from assistant.evidence import Evidence
 from assistant.statuses import Status
 
 # Explicit inapplicable policy reason registered in assistant.eco.
-DRC_NA_REASON = (
-    "NA-RULE:NO-MACROS no physical macro geometry is modified by a logical "
-    "or timing ECO; routed DRC is explicitly not applicable"
-)
+DRC_NA_REASON = PHYSICAL_DRC_NA_REASON
 
 
 def passing_verify(directory: Path):
@@ -77,9 +75,16 @@ def env(tmp_path):
     return ws, ctl, eco
 
 
+def _scope(change_class="logic_optimization", *, physical=False, stage=EcoStage.MAPPED):
+    """Recorded implementation scope for simulated ECO tests."""
+    if change_class not in CHANGE_CLASS_POLICY:
+        change_class = "logic_optimization"  # let policy_for() block the unknown class
+    return EcoChangeScope(change_class, stage, physical, "unit-test recorded implementation facts")
+
+
 def test_restricted_change_without_authorization_is_blocked(env):
     _ws, _ctl, eco = env
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("interface_latency"), 
         experiment_id="eco1",
         description="pipeline the counter",
         change_class="interface_latency",
@@ -94,7 +99,7 @@ def test_restricted_change_without_authorization_is_blocked(env):
 
 def test_nonrestricted_change_runs_without_authorization(env, tmp_path):
     ws, _ctl, eco = env
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="eco_upsize",
         description="upsized one gate",
         change_class="logic_optimization",
@@ -120,7 +125,7 @@ def test_authorized_latency_change_runs(env, tmp_path):
             authorized_by="architect@example",
         )
     )
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("interface_latency"), 
         experiment_id="eco_pipe",
         description="add pipeline stage",
         change_class="interface_latency",
@@ -150,7 +155,7 @@ def test_authorization_requires_reason_and_author():
 def test_rollback_restores_file_when_protected_metric_regresses(env, tmp_path):
     ws, _ctl, eco = env
     original = ws.joinpath("design.v").read_text(encoding="utf-8")
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="eco_bad",
         description="change that worsens WNS",
         change_class="logic_optimization",
@@ -173,7 +178,7 @@ def test_rollback_restores_file_when_protected_metric_regresses(env, tmp_path):
 
 def test_missing_metric_after_change_rolls_back(env, tmp_path):
     ws, _ctl, eco = env
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="eco_missing",
         description="metric vanished",
         change_class="logic_optimization",
@@ -196,9 +201,10 @@ def test_failed_change_application_rolls_back(env):
         ws.joinpath("design.v").write_text("partial", encoding="utf-8")
         raise RuntimeError("write error midway")
 
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="eco_boom",
         description="apply fails",
+        simulated="unit-test simulated ECO",
         change_class="logic_optimization",
         changed_files=["design.v"],
         apply_change=boom,
@@ -213,7 +219,7 @@ def test_failed_change_application_rolls_back(env):
 def test_three_failures_trigger_reassessment(env, tmp_path):
     _ws, _ctl, eco = env
     for i in range(3):
-        res = eco.run_experiment(
+        res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
             experiment_id=f"eco_{i}",
             description="failing attempt",
             change_class="logic_optimization",
@@ -229,7 +235,7 @@ def test_three_failures_trigger_reassessment(env, tmp_path):
     assert eco.reassessment_required()
     # 4th attempt is refused - reassessment, not "it's upstream"
     with pytest.raises(EcoBudgetExceeded) as exc:
-        eco.run_experiment(
+        eco.run_experiment(change_scope=_scope("logic_optimization"), 
             experiment_id="eco_3",
             description="should be refused",
             change_class="logic_optimization",
@@ -247,7 +253,7 @@ def test_three_failures_trigger_reassessment(env, tmp_path):
 def test_success_resets_failure_budget(env, tmp_path):
     _ws, _ctl, eco = env
     for _ in range(2):
-        eco.run_experiment(
+        eco.run_experiment(change_scope=_scope("logic_optimization"), 
             experiment_id="f", description="fail", change_class="logic_optimization",
             changed_files=["design.v"], apply_change=lambda: None,
             evaluate=lambda: {"wns": -1.0},
@@ -256,7 +262,7 @@ def test_success_resets_failure_budget(env, tmp_path):
             simulated="unit-test simulated ECO provider",
         )
     assert eco.consecutive_failures == 2
-    eco.run_experiment(
+    eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="ok", description="pass", change_class="logic_optimization",
         changed_files=["design.v"], apply_change=lambda: None,
         evaluate=lambda: {"wns": 1.0},
@@ -270,7 +276,7 @@ def test_success_resets_failure_budget(env, tmp_path):
 def test_experiment_records_fresh_evidence(env, tmp_path):
     ws, ctl, eco = env
     verify_evidence = passing_verify(tmp_path)
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="eco_ev",
         description="with verification",
         change_class="logic_optimization",

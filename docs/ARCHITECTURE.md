@@ -629,7 +629,17 @@ Cross-Run Comparison (if Run B): Artifact hashes compared
 Regression Continuation (if all stages pass) or Escalation
 ```
 
-### Architecture Evolution (Phases 14–17B)
+#> **Evidence and acceptance contracts (TR-01/02/03, 2026-11-19).** ECO physical-check
+> applicability is derived from recorded implementation facts (`EcoChangeScope`), not from
+> macro inventory or caller prose; a placed/routed standard-cell ECO requires fresh DRC PASS.
+> The accepted candidate is an immutable `CandidateRevision` bound to revalidated evidence;
+> `evaluate()` is read-only and any post-verification mutation rejects and rolls back.
+> Verification deadlines use a monotonic clock with streamed partial evidence and process-tree
+> termination on supported paths; non-cooperative Python callbacks are detected/blocked, not
+> claimed as hard deadlines. Tool execution is injectable in the PowerShell runner via
+> default-preserving seams (TR-04).
+
+## Architecture Evolution (Phases 14–17B)
 
 | Phase | Architecture Change | Status |
 |---|---|---|

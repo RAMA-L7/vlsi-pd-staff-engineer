@@ -2,6 +2,14 @@
 
 ## main — Multi-Design v2.0
 
+### Test-only injection seams (TR-04, 2026-11-19)
+
+`run_regression.ps1` accepts additive parameters `-StageExecutor`, `-AcceptanceExecutor`,
+`-ManifestExecutor`, `-EvidenceDirOverride`, `-WslDistro` and `-SkipToolProbe`. All default to
+the production behaviour. `tests/test_runner_integration_simulated.py` uses them to invoke the
+**actual** runner with fake tools ("Real runner integration with simulated tools"); the SR-02
+scheduling, dependency-authorization, persistence, resume and verdict control flow is unchanged.
+
 ### Authoritative status and commands (SR-08 / SR-10)
 
 This checkout is published commit `45e4251370c39ed27e2ccd6a7a804ed90eaf4472` (tree

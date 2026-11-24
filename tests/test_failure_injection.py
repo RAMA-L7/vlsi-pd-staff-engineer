@@ -18,6 +18,7 @@ import pytest
 from assistant.controller import GateController
 from assistant.diagnosis import sta_verdict
 from assistant.eco import EcoManager, ProtectedMetric
+from assistant.eco import CHANGE_CLASS_POLICY, EcoChangeScope, EcoStage, PHYSICAL_DRC_NA_REASON
 from assistant.evidence import Evidence
 from assistant.liberty import PVTClaim, validate_pvt_claim
 from assistant.statuses import Status
@@ -32,6 +33,13 @@ has_yosys = any(
 
 
 # 1. functional netlist corruption ------------------------------------------
+def _scope(change_class="logic_optimization", *, physical=False, stage=EcoStage.MAPPED):
+    """Recorded implementation scope for simulated ECO tests."""
+    if change_class not in CHANGE_CLASS_POLICY:
+        change_class = "logic_optimization"  # let policy_for() block the unknown class
+    return EcoChangeScope(change_class, stage, physical, "unit-test recorded implementation facts")
+
+
 @pytest.mark.skipif(not has_yosys or os.name != "nt", reason="yosys not available")
 def test_injected_netlist_corruption_detected_by_lec(tmp_path):
     """Corrupt the RTL -> LEC against the golden netlist must NOT prove."""
@@ -197,7 +205,7 @@ def _simulated_eco_verify(tmp_path):
     """
     from assistant.eco import CHANGE_CLASS_POLICY
 
-    drc_na_reason = CHANGE_CLASS_POLICY["logic_optimization"][2].na_reason
+    drc_na_reason = PHYSICAL_DRC_NA_REASON
     report = tmp_path / "simulated_eco_check.txt"
     report.write_text(
         "SIMULATED provider report: deterministic test artifact\n", encoding="utf-8"
@@ -246,7 +254,7 @@ def test_eco_worsening_protected_metric_rolls_back(tmp_path):
     eco = EcoManager(str(ws), ctl,
                      checkpoint_dir=str(tmp_path / "ck"),
                      experiment_log=str(tmp_path / "exp.json"))
-    res = eco.run_experiment(
+    res = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="eco_regress",
         description="injected regression: area blow-up",
         change_class="logic_optimization",

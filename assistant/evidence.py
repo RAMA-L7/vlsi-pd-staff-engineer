@@ -753,6 +753,22 @@ class Evidence:
     library_provenance: str = ""
     extraction_provenance: str = ""
 
+    # -- R6.2: structural execution trust proof -------------------------------
+    #: MAC-bound ExecutionProof dict issued by the trusted execution boundary.
+    #: Authoritative TOOL_EXECUTION evidence MUST carry this; caller-supplied
+    #: command/status/labels alone never qualify production.
+    execution_proof: dict[str, Any] | None = None
+
+    # -- F-01: authoritative provenance classification -----------------------
+    #: ``TOOL`` = tool-derived, authoritative evidence. ``SIMULATED`` = a
+    #: caller-labelled internal/simulated result that is NOT authoritative for
+    #: production qualification. Gate evaluation consults this marker, and it
+    #: round-trips through ``to_dict``/``from_dict`` and persisted state.
+    evidence_class: str = "TOOL"
+    #: Exact caller-supplied label when ``evidence_class == 'SIMULATED'``.
+    #: Retained verbatim so the simulated origin is visible in state/reports.
+    simulated_by: str = ""
+
     # -- construction helpers -------------------------------------------------
     @classmethod
     def from_run(
@@ -825,6 +841,21 @@ class Evidence:
         if binding_context is not None:
             ev.bind_context(binding_context)
         return ev
+
+    # -- provenance classification (F-01) ------------------------------------
+    @property
+    def is_simulated(self) -> bool:
+        """True when this record is a non-authoritative simulated/internal result."""
+        return (
+            str(getattr(self, "evidence_class", "TOOL") or "TOOL").upper() == "SIMULATED"
+            or bool(getattr(self, "simulated_by", ""))
+        )
+
+    def mark_simulated(self, label: str) -> "Evidence":
+        """Mark this record as caller-simulated (never authoritative for a gate)."""
+        self.evidence_class = "SIMULATED"
+        self.simulated_by = str(label)
+        return self
 
     # -- dependency / binding helpers ----------------------------------------
     def set_dependencies(self, deps: DependencySet) -> "Evidence":
@@ -899,6 +930,16 @@ class Evidence:
         """
         stale: list[str] = []
         for label, recorded in self.input_hashes.items():
+            # Reserved synthetic provenance digests (e.g. __candidate_revision__,
+            # __dependencies__) are injected by the ECO layer. They are opaque
+            # revision identifiers, NOT registered file inputs, so they can
+            # never appear in the controller's current_input_hashes(). Treating
+            # them as missing file inputs made every ECO-bound record a
+            # permanent STALE/NOT_RUN and hid genuine verdicts (e.g. LEC FAIL)
+            # from gate diagnostics. They are verified by the ECO revalidation
+            # path instead; genuine registered-input staleness is still enforced.
+            if label.startswith("__"):
+                continue
             now = current.get(label)
             if now is None or now != recorded:
                 stale.append(label)

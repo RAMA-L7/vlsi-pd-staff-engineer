@@ -2,6 +2,15 @@
 
 ## main — Multi-Design v2.0
 
+> **Third-review validation (2026-11-19):** 353 pytest tests pass, including 20
+> TR-01/02/03 adversarial regressions and 9 real-runner integration tests with simulated
+> tools; 149-test Phase 5 safety reaudit; preflight PASS 22/22 hashes; framework 47/0/0;
+> two real `test_counter` baselines PASS 16/16 with REPRODUCIBLE comparison; `soc_ctrl`
+> failure reproduced (SS WNS -2.3378 ns / 3 violators, constraints unchanged). Categories are
+> reported separately in `docs/reviews/third-review-validation.md`. Blockers unchanged:
+> foundry signoff BLOCKED, soc_ctrl timing FAIL/BLOCKED, other hosts NOT_TESTED, macro
+> NOT_APPLICABLE, IR/EM/antenna/UPF/post-fill UNSUPPORTED.
+
 ## Authoritative qualification matrix — this checkout (SR-10 / SR-08)
 
 The authoritative status for this checkout is the qualification matrix in `README.md`, tied to published commit `45e4251370c39ed27e2ccd6a7a804ed90eaf4472` / tree `00b0418ff4fde3cda377f0175bb92c5b1b32e1ca` (published 2026-11-18T17:02:17Z / 2026-11-18T22:32:17+05:30 IST; base `0a9eb57` / `ab0bcf96`), with recorded run IDs `baseline_20261116`, `baseline_20261116_r2`, `final_r3`, and `final_r4` (test_counter: 16/16 stages PASS, 95/95 checks each) and `run_pub_m1d_soc_ctrl_full` (soc_ctrl full physical run: 14/16 stages, retained STA + LVS-gate failures). All phase milestones below are historical context; where they disagree with that matrix, the matrix governs. A fresh baseline was executed at publication; see `docs/reviews/PUBLICATION_REPORT.md`.

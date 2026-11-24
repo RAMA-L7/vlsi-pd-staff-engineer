@@ -40,6 +40,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 from . import __version__
 from .controller import (
@@ -48,11 +49,13 @@ from .controller import (
     GateBypassError,
     GateController,
     GateDefinitionError,
+    GateSpec,
     GateValidationError,
     RESTRICTED_CHANGE_CLASSES,
     StateError,
     Waiver,
     assert_valid_gate_submission,
+    default_gate_specs,
     evaluate_gate_from_state,
     validate_applicability_for_check,
 )
@@ -259,11 +262,29 @@ def cmd_gate_record(args) -> int:
     except ProvenanceError as exc:
         return _err("ProvenanceError", str(exc))
 
+    # R6.3: optional MAC-bound ExecutionProof supplied from the managed boundary.
+    # When present, the evidence command MUST be the exact argv the proof binds,
+    # so the authority's proof-to-evidence binding check succeeds.
+    proof_dict = None
+    proof_command = None
+    proof_file = getattr(args, "proof_file", None)
+    if proof_file:
+        try:
+            import json as _json
+            from assistant.execution_trust import ExecutionProof, DOMAIN_EXECUTION
+            from assistant.r6_authority import get_trust
+            _pd = _json.loads(Path(proof_file).read_text(encoding="utf-8"))
+            _p = ExecutionProof.from_dict(_pd, get_trust())
+            proof_dict = _p.to_dict()
+            proof_command = list(_pd.get("command", []) or [])
+        except Exception as exc:
+            return _err("InvalidExecutionProof", str(exc))
+
     ev = Evidence(
         check_id=args.check,
         status=parse_status(args.status),
         reason=args.reason,
-        command=[args.command] if args.command else [],
+        command=proof_command if proof_command is not None else ([args.command] if args.command else []),
         exit_code=args.exit_code,
         analysis_view=args.view,
         tool_versions=tool_versions,
@@ -276,6 +297,7 @@ def cmd_gate_record(args) -> int:
         logs=logs,
         artifacts=artifacts,
         applicability_reason="",
+        execution_proof=proof_dict,
     )
 
     # Enforce the authoritative submission boundary BEFORE any state write.
@@ -291,6 +313,46 @@ def cmd_gate_record(args) -> int:
     return _out({"recorded": recorded.evidence_id, "status": recorded.status.value})
 
 
+def cmd_gate_register(args) -> int:
+    """Register authoritative gate spec(s) (R4 default-deny governance).
+
+    A registered ``GateSpec`` supplies the authoritative required-check set,
+    view and upstream dependencies for its gate; neither callers nor persisted
+    ``gate_history`` can shorten or rewrite that set. ``--defaults`` registers
+    the canonical production specs from ``default_gate_specs()``.
+    """
+    specs: list = []
+    if args.defaults:
+        specs.extend(default_gate_specs().values())
+    if args.spec_json:
+        try:
+            specs.append(json.loads(args.spec_json))
+        except (ValueError, TypeError) as exc:
+            return _err("InvalidInput", f"--spec-json is not valid JSON: {exc}")
+    if args.spec_file:
+        try:
+            with open(args.spec_file, "r", encoding="utf-8") as fh:
+                specs.append(json.load(fh))
+        except (OSError, ValueError) as exc:
+            return _err("InvalidInput", f"--spec-file unreadable/invalid: {exc}")
+    if not specs:
+        return _err(
+            "InvalidInput",
+            "provide --spec-json, --spec-file or --defaults to register a gate",
+        )
+
+    ctl = GateController(args.state)
+    registered: list[str] = []
+    try:
+        for raw in specs:
+            spec = raw if isinstance(raw, GateSpec) else GateSpec.from_dict(raw)
+            ctl.register_gate(spec)
+            registered.append(spec.gate_id)
+    except (GateDefinitionError, KeyError, TypeError, ValueError) as exc:
+        return _err("GateDefinitionError", str(exc))
+    return _out({"registered": registered, "gate_specs": sorted(ctl.gate_specs)})
+
+
 def cmd_gate_evaluate(args) -> int:
     """Validation command: 0 only when the gate decision is a PASS."""
     required = [c.strip() for c in args.required.split(",") if c.strip()]
@@ -304,9 +366,14 @@ def cmd_gate_evaluate(args) -> int:
         upstream_gates=upstream,
     )
     # The full decision (including CLEAN_PASS vs WAIVED_PASS disposition) is
-    # preserved in stdout; the shell signal reports only success vs failure.
+    # preserved in stdout. The shell signal must reflect PRODUCTION QUALIFICATION,
+    # not merely a PASS-shaped result: SIMULATED_PASS has decision=PASS but
+    # qualified=False and must never exit 0 (F-01 CLI boundary, R2-03).
+    # Fail closed: the authorization flag must be present and true; never fall
+    # back to the PASS-shaped ``passed`` property for a shell success signal.
+    qualified = bool(getattr(gd, "qualified", False))
     return _out_code(
-        gd.to_dict(), EXIT_OK if gd.passed else EXIT_VALIDATION_FAILED
+        gd.to_dict(), EXIT_OK if qualified else EXIT_VALIDATION_FAILED
     )
 
 
@@ -546,6 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", required=True, choices=[s.value for s in Status])
     p.add_argument("--reason", required=True)
     p.add_argument("--command", default="")
+    p.add_argument("--proof-file", default=None,
+                   help="JSON ExecutionProof from the managed boundary; binds evidence command")
     p.add_argument("--exit-code", type=int, default=None)
     p.add_argument("--view", default="UNKNOWN")
     p.add_argument("--na-reason", default="")
@@ -579,6 +648,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--view", default="")
     p.add_argument("--upstream", default="")
     p.set_defaults(func=cmd_gate_evaluate)
+
+    p = sub.add_parser("gate-register", help="register an authoritative gate spec")
+    p.add_argument("--state", required=True)
+    p.add_argument("--spec-json", default="", help="inline GateSpec JSON object")
+    p.add_argument("--spec-file", default="", help="path to a GateSpec JSON file")
+    p.add_argument("--defaults", action="store_true",
+                   help="register the default production gate specs")
+    p.set_defaults(func=cmd_gate_register)
 
     p = sub.add_parser("gate-report", help="dump controller state")
     p.add_argument("--state", required=True)

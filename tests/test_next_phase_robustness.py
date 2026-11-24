@@ -43,6 +43,7 @@ from assistant.controller import (
     Waiver,
 )
 from assistant.eco import CHANGE_CLASS_POLICY, EcoManager, ProtectedMetric
+from assistant.eco import EcoChangeScope, EcoStage, PHYSICAL_DRC_NA_REASON
 from assistant.evidence import DependencySet, Evidence
 from assistant.hashing import sha256_file
 from assistant.statuses import Status
@@ -85,11 +86,18 @@ def _record(
     outcome: dict | None = None,
 ) -> Evidence:
     """Record one fully-provenanced SIMULATED check result (strict boundary)."""
+    _proof = None
+    _cmd = ["simulated_ws5_provider", "--check", check]
+    try:
+        import r62_proof_helper as _ph
+        _proof, _cmd = _ph.proof_and_command()
+    except Exception:
+        _proof = None
     return ctl.record_check_result(
         check,
         status,
         reason,
-        command=["simulated_ws5_provider", "--check", check],
+        command=list(_cmd),
         exit_code=exit_code,
         analysis_view=view,
         tool_versions={"simulated_ws5_provider": "1.0"},
@@ -100,6 +108,7 @@ def _record(
             outcome if outcome is not None else {"verdict": status.value}
         ),
         spec=spec,
+        execution_proof=_proof,
     )
 
 
@@ -142,6 +151,13 @@ def _gate_model() -> dict:
 # ===========================================================================
 # 1. Artifact integrity / provenance across a ledger reload
 # ===========================================================================
+def _scope(change_class="logic_optimization", *, physical=False, stage=EcoStage.MAPPED):
+    """Recorded implementation scope for simulated ECO tests."""
+    if change_class not in CHANGE_CLASS_POLICY:
+        change_class = "logic_optimization"  # let policy_for() block the unknown class
+    return EcoChangeScope(change_class, stage, physical, "unit-test recorded implementation facts")
+
+
 def test_corrupt_hashed_report_after_reload_blocks_without_silent_rebind(tmp_path):
     """A report corrupted after recording must block a freshly loaded controller.
 
@@ -421,7 +437,7 @@ def test_eco_rollback_verification_detects_surviving_extra_file(tmp_path, monkey
             encoding="utf-8")
         extra.write_text("WS5 simulated stray file\n", encoding="utf-8")
 
-    result = eco.run_experiment(
+    result = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="ws5_extra_file", description="SIMULATED faulty-restore ECO",
         change_class="logic_optimization", changed_files=["design.v"],
         apply_change=apply,
@@ -432,7 +448,7 @@ def test_eco_rollback_verification_detects_surviving_extra_file(tmp_path, monkey
             _simulated_evidence(tmp_path, "eco_sta"),
             _simulated_evidence(
                 tmp_path, "eco_physical_drc",
-                na_reason=CHANGE_CLASS_POLICY["logic_optimization"][2].na_reason,
+                na_reason=PHYSICAL_DRC_NA_REASON,
             ),
         ],
         simulated=SIM_LABEL,
@@ -456,7 +472,7 @@ def test_eco_rollback_removes_nested_extra_file_when_restore_succeeds(tmp_path):
         nested_file.parent.mkdir(parents=True, exist_ok=True)
         nested_file.write_text("WS5 simulated nested stray\n", encoding="utf-8")
 
-    result = eco.run_experiment(
+    result = eco.run_experiment(change_scope=_scope("logic_optimization"), 
         experiment_id="ws5_nested", description="SIMULATED nested-extra-file ECO",
         change_class="logic_optimization", changed_files=["design.v"],
         apply_change=apply,
@@ -467,7 +483,7 @@ def test_eco_rollback_removes_nested_extra_file_when_restore_succeeds(tmp_path):
             _simulated_evidence(tmp_path, "eco_sta"),
             _simulated_evidence(
                 tmp_path, "eco_physical_drc",
-                na_reason=CHANGE_CLASS_POLICY["logic_optimization"][2].na_reason,
+                na_reason=PHYSICAL_DRC_NA_REASON,
             ),
         ],
         simulated=SIM_LABEL,

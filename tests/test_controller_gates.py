@@ -376,10 +376,34 @@ def test_upstream_gate_must_pass_first(ctl):
     gd = ctl.evaluate_gate("g2", ["sta"], upstream_gates=["g1"])
     assert not gd.passed
     assert "upstream gate g1 not PASS" in gd.reason
-    # pass g1, then g2 evaluates cleanly
+    # R2-03: a SIMULATED_PASS upstream gate is non-qualifying and must NOT
+    # authorize downstream production execution.
     ctl.evaluate_gate("g1", ["sta"])
     gd2 = ctl.evaluate_gate("g2", ["sta"], upstream_gates=["g1"])
-    assert gd2.passed
+    assert not gd2.passed
+    assert "SIMULATED_PASS" in gd2.reason
+    # A genuine tool-derived PASS upstream gate still authorizes downstream.
+    from pathlib import Path
+    genuine_report = Path(ctl.state_path).parent / "genuine.txt"
+    genuine_report.write_text("tool report\n", encoding="utf-8")
+    genuine = Evidence.from_run(
+        "sta", Status.PASS, reason="tool-derived PASS", command=["tool"],
+        exit_code=0, analysis_view="ROUTED_EXTRACTED",
+        tool_versions={"tool": "1.0"}, reports=[str(genuine_report)],
+    )
+    # R6.3: attach a real proof and set the evidence command to the bound argv.
+    try:
+        import r62_proof_helper as _ph
+        _d, _cmd = _ph.proof_and_command()
+        if _d is not None:
+            genuine.execution_proof = _d
+            object.__setattr__(genuine, "command", list(_cmd))
+    except Exception:
+        pass
+    ctl.record_evidence(genuine)
+    ctl.evaluate_gate("g3", ["sta"])
+    gd3 = ctl.evaluate_gate("g4", ["sta"], upstream_gates=["g3"])
+    assert gd3.passed
 
 
 # ------------------------------------------------------- view enforcement

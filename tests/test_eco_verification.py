@@ -5,18 +5,20 @@ tool, network service or live inference is used; evidence is constructed in
 memory with a local simulated report file so provenance binding is real.
 """
 from pathlib import Path
+import time
 
 import pytest
 
 from assistant.controller import GateController
 from assistant.eco import CHANGE_CLASS_POLICY, EcoManager, ProtectedMetric
+from assistant.eco import EcoChangeScope, EcoStage, PHYSICAL_DRC_NA_REASON
 from assistant.evidence import Evidence
 from assistant.hashing import sha256_file
 from assistant.statuses import Status
 
 BASELINE = "module d; endmodule  // SIMULATED golden RTL\n"
 CORRUPT = "module d; assign broken = 1'bx; endmodule  // SIMULATED corruption\n"
-DRC_NA = CHANGE_CLASS_POLICY["logic_optimization"][2].na_reason
+DRC_NA = PHYSICAL_DRC_NA_REASON
 
 
 @pytest.fixture
@@ -88,7 +90,7 @@ def _run(eco, ws, tmp_path, *, verify=None, evaluate=None, apply_change=None,
     # Every provider in this module is a labelled deterministic simulation:
     # opt out of strict tool provenance explicitly, never silently.
     kwargs.setdefault("simulated", "unit-test simulated ECO verification provider")
-    return eco.run_experiment(
+    return eco.run_experiment(change_scope=_scope(change_class), 
         experiment_id="eco_sr01",
         description="SIMULATED ECO experiment",
         change_class=change_class,
@@ -102,6 +104,13 @@ def _run(eco, ws, tmp_path, *, verify=None, evaluate=None, apply_change=None,
 
 
 # -- required regression -----------------------------------------------------
+def _scope(change_class="logic_optimization", *, physical=False, stage=EcoStage.MAPPED):
+    """Recorded implementation scope for simulated ECO tests."""
+    if change_class not in CHANGE_CLASS_POLICY:
+        change_class = "logic_optimization"  # let policy_for() block the unknown class
+    return EcoChangeScope(change_class, stage, physical, "unit-test recorded implementation facts")
+
+
 def test_simulated_wns_gain_with_lec_fail_never_passes(eco_env, tmp_path):
     """REQUIRED REGRESSION (simulated): WNS improves, LEC reports FAIL.
 
@@ -230,14 +239,21 @@ def test_verify_timeout_exception_rejects_and_rolls_back(eco_env, tmp_path):
 def test_verify_duration_timeout_rejects_and_rolls_back(eco_env, tmp_path):
     ws, _ctl, eco = eco_env
     before = sha256_file(ws / "design.v")
+    # TR-03: a self-reported duration is informational only. A real deadline
+    # is enforced by the framework clock against a genuinely slow provider.
+    def slow_verify():
+        time.sleep(0.5)
+        return simulated_provider(tmp_path)()
+
     result = _run(
         eco, ws, tmp_path,
-        verify=simulated_provider(tmp_path, lec_duration=9.0),
-        verification_timeout_s=1.0,
+        verify=slow_verify,
+        verification_timeout_s=0.05,
         apply_change=lambda: (ws / "design.v").write_text(CORRUPT, encoding="utf-8"),
     )
     assert result.status != "PASS"
-    assert "timed out" in result.reason
+    assert "deadline exceeded" in result.reason
+    assert result.deadline_exceeded
     assert result.rollback_verified
     assert sha256_file(ws / "design.v") == before
 
@@ -307,22 +323,23 @@ def test_inapplicable_reason_must_match_registered_policy(eco_env, tmp_path):
         apply_change=lambda: (ws / "design.v").write_text(CORRUPT, encoding="utf-8"),
     )
     assert result.status != "PASS"
-    assert "registered policy" in result.reason
+    assert ("implementation facts" in result.reason or "physical-scope" in result.reason)
     assert result.rollback_verified
     assert sha256_file(ws / "design.v") == before
 
 
 def test_no_op_policy_is_explicit_and_allows_no_file_change(eco_env, tmp_path):
     _ws, _ctl, eco = eco_env
-    assert eco.run_experiment(
+    assert eco.run_experiment(change_scope=_scope("no_op"), 
         experiment_id="noop", description="SIMULATED no change",
+        simulated="unit-test simulated ECO",
         change_class="no_op", changed_files=["design.v"],
         apply_change=lambda: None, evaluate=lambda: {"wns": 0.0},
         protected_metrics=[ProtectedMetric("wns", 0.0)], verify=None,
     ).status == "PASS"
 
     ws, _ctl, eco2 = eco_env
-    result = eco2.run_experiment(
+    result = eco2.run_experiment(change_scope=_scope("no_op"), 
         experiment_id="noop_bad", description="SIMULATED disguised change",
         change_class="no_op", changed_files=["design.v"],
         apply_change=lambda: (ws / "design.v").write_text(CORRUPT, encoding="utf-8"),
@@ -371,8 +388,8 @@ def test_missing_protected_metric_rejects(eco_env, tmp_path):
 def test_changed_file_path_escape_is_blocked(eco_env, tmp_path):
     ws, _ctl, eco = eco_env
     outside = tmp_path / "outside.v"
-    result = eco.run_experiment(
-        experiment_id="escape", description="SIMULATED path escape",
+    result = eco.run_experiment(change_scope=_scope("logic_optimization"), 
+        experiment_id="escape", description="SIMULATED path escape", simulated="unit-test simulated ECO",
         change_class="logic_optimization", changed_files=["../outside.v"],
         apply_change=lambda: outside.write_text("escaped", encoding="utf-8"),
         evaluate=lambda: {"wns": 1.0},

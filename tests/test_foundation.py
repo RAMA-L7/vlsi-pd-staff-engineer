@@ -213,7 +213,10 @@ def test_tools_environment_overrides_are_validated_and_defaults_preserved():
 def test_readme_has_one_current_matrix_and_corrected_timing():
     readme = _read(os.path.join(REPO, "README.md")).decode("utf-8", "replace")
     assert "Authoritative qualification matrix" in readme
-    assert "0a9eb57e38b86acc51b8bcb6dea53bd97ab90e9b" in readme
+    # The matrix is tied to the published content identity (TR-00); the base
+    # commit is retained only as historical provenance.
+    assert "45e4251370c39ed27e2ccd6a7a804ed90eaf4472" in readme
+    assert "0a9eb57" in readme
     assert "baseline_20261116" in readme
     assert "run_pub_m1d_soc_ctrl_full" in readme
     # macro example explicitly unsupported; automation vs agent orchestration distinguished
