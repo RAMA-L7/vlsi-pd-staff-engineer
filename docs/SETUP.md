@@ -19,12 +19,18 @@ any other machine.
 
 | Item | Supported / recorded value |
 |---|---|
-| Host OS | Windows 10/11 x86-64 |
-| Shell | PowerShell 5.1+ (Windows) for the runner; `bash` for `test_framework.sh` |
-| Linux side | WSL 2 with **Ubuntu-24.04** (override: `ASSISTANT_WSL_DISTRO`) |
+| Host OS | **One validated Windows x86-64 developer host only** (host `mi`). The Windows 10/11 family is the recorded environment, not a tested cross-version range; any second host or other Windows version is **NOT_TESTED**. |
+| Shell | PowerShell 5.1+ (Windows) for the runner; `bash` for `test_framework.sh` (script presence only). Native POSIX shell/test execution is **NOT_TESTED**. |
+| Linux side | WSL 2 with **Ubuntu-24.04** (override: `ASSISTANT_WSL_DISTRO`) used only as an EDA tool host for the frozen/earlier tree. WSL as a pytest host, other WSL distros and native Linux are **NOT_TESTED**. |
 | Python | **3.10.11 minimum** (validated); project venv at `D:\tools\venv\Scripts\python.exe`. The `python`/`python3` entries in `WindowsApps` are Microsoft Store alias stubs and are rejected by preflight — set `REG_PYTHON` to a real interpreter. |
 | pytest | 9.2.0 or compatible (for the targeted test suite) |
 | Git | any modern Git with `git` on PATH (preflight requires it) |
+
+The Python/pytest versions above are the versions used for the recorded runs on
+the one validated host (fixed candidate `e591c30a…`: Python 3.10.11, pytest
+9.2.0). Other interpreter, pytest or Git versions are **NOT_TESTED**; "or
+compatible" is not a cross-version validation claim. See
+`docs/VALIDATION_SCOPE_AND_PORTABILITY.md`.
 
 ## 2. Minimum / recorded tool versions
 

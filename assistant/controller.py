@@ -37,6 +37,8 @@ and docs/reviews/second-review.md SR-03):
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import datetime as _dt
 import hashlib
 import hmac
@@ -45,6 +47,7 @@ import os
 import secrets
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Iterable, Mapping, Sequence
@@ -118,14 +121,139 @@ DOMAIN_WAIVER = "waiver/v1"
 # registry is durable (state.json) so replay from an earlier run/process fails
 # closed. The proof's own nonce is the key -- NEVER a caller label.
 DOMAIN_PROOF_NONCE = "proof_nonce/v1"
+# R7.1: check_index membership is an AUTHORIZATION decision. It is bound under
+# the SAME external key as evidence/waivers/nonces so a ledger-only writer cannot
+# point one check at another check's evidence (A7-P0-01).
+DOMAIN_CHECK_INDEX = "check_index/v1"
+# EXT-01 (Agent A): append-only evidence manifest. Every evidence id EVER
+# recorded must remain enumerated here, and the whole list is MAC-bound under
+# the external key. This is the first ledger record whose ABSENCE (or whose
+# entry removal) is detectable: all pre-existing checks compare a binding to a
+# payload still present in the same state, so deleting both record and binding
+# left no trace. A key-free writer cannot re-sign a shortened manifest.
+DOMAIN_EVIDENCE_MANIFEST = "evidence_manifest/v1"
+_EVIDENCE_MANIFEST_FIELD = "evidence_manifest"
+_EVIDENCE_MANIFEST_RECORD = "all"
 
 _EPHEMERAL_LEDGER_KEY: bytes | None = None
-#: Process-wide critical section: record -> envelope mint -> nonce consume.
+#: Process-wide critical section: record -> envelope mint -> index write -> nonce consume.
 _PROOF_RECORD_LOCK = threading.RLock()
+#: Re-entrancy counters for the OS-level per-ledger advisory lock.
+_CROSS_PROCESS_LOCKS: dict[str, int] = {}
+_CROSS_PROCESS_LOCK_GUARD = threading.RLock()
 
 
 class LedgerIntegrityError(RuntimeError):
     """Raised when ledger integrity cannot be established (fail closed)."""
+
+
+def _state_fingerprint(state: Mapping) -> str:
+    """Content hash of a durable state; detects a newer on-disk snapshot."""
+    try:
+        body = json.dumps(
+            state, sort_keys=True, separators=(",", ":"), default=str
+        )
+    except Exception:  # pragma: no cover - defensive
+        return ""
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _os_file_lock(handle, *, exclusive: bool) -> None:
+    """Acquire/release an advisory lock on one byte of *handle* (best effort)."""
+    try:  # Windows
+        import msvcrt  # type: ignore
+
+        mode = msvcrt.LK_NBLCK if exclusive else msvcrt.LK_UNLCK
+        msvcrt.locking(handle.fileno(), mode, 1)
+        return
+    except ImportError:  # POSIX
+        import fcntl  # type: ignore
+
+        op = fcntl.LOCK_EX | fcntl.LOCK_NB if exclusive else fcntl.LOCK_UN
+        fcntl.flock(handle.fileno(), op)
+
+
+@contextlib.contextmanager
+def ledger_critical_section(state_path):
+    """The ONE cross-process boundary for every state transaction (R7.2 T1/T2).
+
+    ``_PROOF_RECORD_LOCK`` serializes threads; an OS advisory lock on the
+    sidecar ``<state>.lock`` file serializes processes.  The lock is acquired
+    BEFORE the durable state is read and released only AFTER the fsync+replace
+    that commits that same state.  Because the nonce ledger lives inside the
+    same state file, the only lock ordering is ``state lock -> nonce ledger``;
+    no nested lock on a DIFFERENT state is ever taken here, so no ordering
+    deadlock is possible.  Re-entrant on the same state (evaluation ->
+    qualification -> nonce consumption).
+
+    Any acquisition/open failure or timeout is fail-closed: the caller gets
+    ``LedgerIntegrityError`` and NO write occurs.  A process that dies while
+    holding the OS lock loses it on process exit; the (harmless) lock file
+    persists.
+    """
+    with _PROOF_RECORD_LOCK:
+        # A6: canonicalise so two spellings of the same state (symlinks, ..)
+        # cannot acquire two different locks and race on the same file.
+        lock_path = os.path.realpath(os.path.abspath(str(state_path))) + ".lock"
+        handle = None
+        acquired = False
+        with _CROSS_PROCESS_LOCK_GUARD:
+            depth = _CROSS_PROCESS_LOCKS.get(lock_path, 0)
+        if depth == 0:
+            try:
+                directory = os.path.dirname(lock_path) or "."
+                os.makedirs(directory, exist_ok=True)
+                handle = open(lock_path, "a+b")
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\x00")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                handle.seek(0)
+            except OSError as exc:
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except OSError:  # pragma: no cover - defensive cleanup
+                        pass
+                raise LedgerIntegrityError(
+                    f"could not open cross-process ledger lock {lock_path}: {exc}"
+                ) from exc
+            deadline = time.monotonic() + 30.0
+            while True:
+                try:
+                    _os_file_lock(handle, exclusive=True)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        try:
+                            handle.close()
+                        finally:
+                            raise LedgerIntegrityError(
+                                "could not acquire cross-process ledger lock "
+                                f"{lock_path}: {exc}"
+                            ) from exc
+                    time.sleep(0.005)
+        with _CROSS_PROCESS_LOCK_GUARD:
+            _CROSS_PROCESS_LOCKS[lock_path] = (
+                _CROSS_PROCESS_LOCKS.get(lock_path, 0) + 1
+            )
+        try:
+            yield
+        finally:
+            with _CROSS_PROCESS_LOCK_GUARD:
+                remaining = _CROSS_PROCESS_LOCKS.get(lock_path, 1) - 1
+                if remaining <= 0:
+                    _CROSS_PROCESS_LOCKS.pop(lock_path, None)
+                else:
+                    _CROSS_PROCESS_LOCKS[lock_path] = remaining
+            if acquired and handle is not None:
+                try:
+                    _os_file_lock(handle, exclusive=False)
+                finally:
+                    handle.close()
+
 
 
 def _derive_ledger_key(passphrase: str) -> bytes:
@@ -267,6 +395,42 @@ def _proof_nonce_payload(state: Mapping, record_id: str) -> Mapping | None:
 BOUND_PAYLOAD_RESOLVERS[DOMAIN_PROOF_NONCE] = _proof_nonce_payload
 
 
+def _check_index_payload(state: Mapping, record_id: str) -> Mapping | None:
+    """R7.1: payload bound for one check's evidence-id list.
+
+    ``record_id`` is the check_id. The payload carries the check_id explicitly
+    as well, so a MAC valid for one check cannot be replayed under another
+    check's index key even if the two id lists happen to be identical.
+    """
+    ids = (state.get("check_index") or {}).get(record_id)
+    if ids is None:
+        return None
+    if isinstance(ids, (str, bytes)) or not isinstance(ids, (list, tuple)):
+        return None
+    return {"check_id": record_id, "evidence_ids": list(ids)}
+
+
+BOUND_PAYLOAD_RESOLVERS[DOMAIN_CHECK_INDEX] = _check_index_payload
+
+
+def _evidence_manifest_payload(state: Mapping, record_id: str) -> Mapping | None:
+    """EXT-01: canonical payload for the append-only evidence manifest."""
+    if str(record_id) != _EVIDENCE_MANIFEST_RECORD:
+        return None
+    manifest = state.get(_EVIDENCE_MANIFEST_FIELD)
+    if isinstance(manifest, (str, bytes)) or not isinstance(manifest, (list, tuple)):
+        return None
+    return {"evidence_ids": [str(i) for i in manifest]}
+
+
+BOUND_PAYLOAD_RESOLVERS[DOMAIN_EVIDENCE_MANIFEST] = _evidence_manifest_payload
+
+
+def check_index_mac_payload(check_id: str, evidence_ids: Sequence[str]) -> dict:
+    """Canonical, MAC-covered payload for a check_index association."""
+    return {"check_id": str(check_id), "evidence_ids": [str(i) for i in evidence_ids]}
+
+
 #: Applicability reasons must start with an explicit rule token and explain
 #: why the check does not apply.  Rule ids live in APPLICABILITY_RULES.
 APPLICABILITY_RULES: dict[str, str] = {
@@ -388,6 +552,34 @@ NON_WAIVABLE_CHECKS: frozenset[str] = frozenset(
 WAIVER_POLICIES: frozenset[str] = frozenset(
     {"temporary_risk_acceptance", "tool_gap", "unspecified"}
 )
+
+# EXT-05 / B-03 -- explicit waiver policy (intended semantics)
+# ------------------------------------------------------------
+# A waiver is a SUPERVISED AUTHORIZATION DECISION about reporting, never an
+# authorization *grant*. It must never convert failed engineering evidence
+# into an authorized (production-qualified) PASS:
+#
+# * A waiver may make a blocking status non-blocking for the gate *decision*
+#   (decision=PASS, disposition=WAIVED_PASS, CLI exit 0) so the supervised
+#   workflow can continue and the exception stays visible in the report.
+# * A waived check keeps its underlying FAIL/INCONCLUSIVE/UNSUPPORTED/NOT_RUN
+#   status in the check report. It is NON-AUTHORIZING: a gate that needed a
+#   waiver is never ``qualified`` and never authorizes a downstream stage.
+#
+# HARD BLOCKERS -- can never be waived, even for the reporting disposition:
+#   - functional-proof / equivalence checks (NON_WAIVABLE_CHECKS or a
+#     registered CheckSpec with waivable=False): genuine PASS only;
+#   - integrity / revalidation failures (revalidate_evidence problems), e.g.
+#     modified/missing artifacts or changed pinned dependencies/context;
+#   - structural evidence/check_index problems, invalid MACs and simulated
+#     provenance: these already fail closed before the waiver decision;
+#   - waivers with an invalid/missing MAC, wrong scope, wrong input revision
+#     or expiry are ignored by waivers_for() (fail closed).
+#
+# WAIVABLE (reporting-only, non-authorizing): ancillary engineering checks
+# whose failure is a documented, scoped, approved, revision-bound exception.
+# Validated NOT_APPLICABLE is distinct from a waiver: it removes a check from
+# scope entirely and may remain qualified.
 
 
 def _parse_utc(value: str) -> _dt.datetime:
@@ -897,7 +1089,9 @@ class GateDecision:
     #: evidence. A SIMULATED_PASS decision is not authoritative and is never
     #: qualified for production / downstream stage authorization.
     simulated_checks: list[str] = field(default_factory=list)
-    #: True only for a genuinely authoritative PASS (never for SIMULATED_PASS).
+    #: True only for a genuinely authoritative PASS. Never true for
+    #: SIMULATED_PASS (F-01) or WAIVED_PASS (EXT-05): a waived failure remains a
+    #: failure and carries no downstream authorization weight.
     qualified: bool = True
 
     @property
@@ -925,14 +1119,18 @@ class GateDecision:
 class GateController:
     """Owns evidence records, waivers and gate evaluation for one workspace."""
 
-    def __init__(self, state_path: str | os.PathLike[str]):
-        self.state_path = str(state_path)
-        self._state: dict = {
+    @staticmethod
+    def _blank_state() -> dict:
+        """A fresh, empty durable-state skeleton (shared by init and reload)."""
+        return {
             "version": 2,
             "run_status": "ACTIVE",
             "cancel_reason": "",
             "restart_history": [],
             "evidence": {},       # evidence_id -> record
+            # EXT-01: append-only list of every evidence id ever recorded.
+            # Never pruned on deletion: a missing record stays detectable.
+            "evidence_manifest": [],
             "check_index": {},    # check_id -> [evidence_id, ...] (ordered)
             "waivers": [],
             "summaries": [],      # advisory only, never read by evaluate_gate
@@ -951,13 +1149,24 @@ class GateController:
             # nonce -> evidence_id. A nonce may only ever be owned by ONE
             # evidence item; reuse by another item is denied fail-closed.
             "used_proof_nonces": {},
-            "_integrity_key": "",     # per-ledger process-generated HMAC key
+            "_integrity_key": "",     # legacy field: purged, never used
             "created_utc": utc_now(),
             "updated_utc": utc_now(),
         }
+
+    def __init__(self, state_path: str | os.PathLike[str]):
+        self.state_path = str(state_path)
+        # RC P0-A fix: an IMMEDIATE in-process cancellation latch. cancel() sets
+        # this synchronously BEFORE the (slower) durable transaction, so ECO's
+        # commit-time guard observes cancellation even if the cross-process
+        # lock/fsync transaction has not yet committed run_status to state.json.
+        self._cancel_latch: str = ""
+        self._state: dict = self._blank_state()
+        self._disk_fingerprint = _state_fingerprint(self._state)
         if os.path.exists(self.state_path):
             with open(self.state_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
+            self._disk_fingerprint = _state_fingerprint(loaded)
             self._state.update(loaded)
 
         # R5: ledger integrity key resolved from OUTSIDE the ledger. Never
@@ -1025,8 +1234,22 @@ class GateController:
         # never registered one; explicitly registered specs still take priority.
         self._default_specs: dict[str, GateSpec] = default_gate_specs()
 
-    # -- persistence ----------------------------------------------------------
+        # R7.1: migrate only *consistent* legacy index entries to the new
+        # external-key binding. Inconsistent entries stay unbound and fail
+        # closed (see _migrate_check_index); migration never authenticates a
+        # ledger-only substitution.
+        with _PROOF_RECORD_LOCK:
+            self._migrate_check_index()
+
+    # -- persistence & the single transaction boundary -----------------------
     def _save(self) -> None:
+        """Low-level atomic writer.
+
+        R7.2: production callers MUST go through :meth:`_mutate`; this method is
+        retained only as the durable writer used by that transaction (and by a
+        few explicit test fixtures).  It fsyncs the temp file before the rename
+        so an acknowledged write is durable (T5).
+        """
         self._state["updated_utc"] = utc_now()
         directory = os.path.dirname(os.path.abspath(self.state_path)) or "."
         os.makedirs(directory, exist_ok=True)
@@ -1034,11 +1257,275 @@ class GateController:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self._state, f, indent=2, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self.state_path)  # atomic on POSIX and Windows
         except BaseException:
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise
+
+    def _raw_disk_state(self) -> dict:
+        """The durable JSON mapping exactly as stored (no defaults added)."""
+        if not os.path.exists(self.state_path):
+            return {}
+        with open(self.state_path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, Mapping):
+            raise LedgerIntegrityError(
+                f"durable state {self.state_path!r} is not a mapping"
+            )
+        return dict(loaded)
+
+    def durable_state_is_current(self) -> bool:
+        """True when this controller's last known disk snapshot is unchanged.
+
+        A1: a stand-alone authorization read may honour in-memory edits only
+        while the durable snapshot they were derived from is still current. If
+        another process has committed a newer state, the caller MUST use the
+        freshly reloaded state instead.
+        """
+        try:
+            return _state_fingerprint(self._raw_disk_state()) == self._disk_fingerprint
+        except Exception:  # noqa: BLE001 - corrupt/unreadable state fails closed
+            return False
+
+    def _load_state_fresh(self) -> dict:
+        """Reload durable state from disk into a NEW dict (never a stale cache).
+
+        Missing keys are defaulted exactly as on a fresh controller and the
+        legacy in-ledger key is purged.  A corrupt/unreadable state file raises:
+        the transaction then fails closed without writing anything.
+        """
+        fresh = self._blank_state()
+        fresh.update(self._raw_disk_state())
+        fresh.pop("_integrity_key", None)
+        for key in (
+            "ledger_bindings", "evidence", "evidence_manifest", "check_index",
+            "waivers", "summaries",
+            "gate_history", "registered_inputs", "design_facts", "submissions",
+            "gate_specs", "check_specs", "gate_definitions", "evidence_integrity",
+            "used_proof_nonces", "evidence_provenance",
+        ):
+            fresh.setdefault(key, {})
+        fresh.setdefault("restart_history", [])
+        fresh.setdefault(_LEDGER_BINDINGS_FIELD, {})
+        return fresh
+
+    def _refresh_derived_views(self) -> None:
+        """Re-derive in-memory views IN PLACE from ``self._state`` (A2).
+
+        ``self._inputs``, ``gate_specs``, ``check_specs`` and ``gate_definitions``
+        are live views held by callers (eco.py / runner.py / tests). A reload
+        must clear+update the SAME objects, never rebind them, otherwise writes
+        through those views go to a detached dictionary.
+        """
+        registered = dict(self._state.get("registered_inputs") or {})
+        if not hasattr(self, "_inputs") or self._inputs is None:
+            self._inputs = registered
+        else:
+            self._inputs.clear()
+            self._inputs.update(registered)
+        # The live view MUST be the very object persisted under this key:
+        # register_input() writes through self._inputs, so a detached copy would
+        # silently drop registrations (A2 detached-dict bug).
+        self._state["registered_inputs"] = self._inputs
+        for attr in ("gate_specs", "check_specs", "gate_definitions"):
+            if not hasattr(self, attr) or getattr(self, attr) is None:
+                setattr(self, attr, {})
+        self.gate_specs.clear()
+        self.check_specs.clear()
+        self.gate_definitions.clear()
+        if not hasattr(self, "_unverifiable_definitions") or self._unverifiable_definitions is None:
+            self._unverifiable_definitions = []
+        self._unverifiable_definitions.clear()
+        for gid, data in (self._state.get("gate_specs") or {}).items():
+            try:
+                self.gate_specs[gid] = GateSpec.from_dict(data)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                continue
+        for cid, data in (self._state.get("check_specs") or {}).items():
+            try:
+                self.check_specs[cid] = CheckSpec.from_dict(data)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                continue
+        for gid, definition in (self._state.get("gate_definitions") or {}).items():
+            expected = read_binding(self._state, DOMAIN_GATE_DEFINITION, gid)
+            if self.ledger_integrity.verify(
+                DOMAIN_GATE_DEFINITION, definition, expected, record_id=gid
+            ):
+                self.gate_definitions[gid] = definition
+            else:
+                self._unverifiable_definitions.append(gid)
+        self._default_specs = default_gate_specs()
+
+    @staticmethod
+    def _fail_evidences(state: Mapping) -> set[str]:
+        """Evidence ids whose durable status is FAIL (append-only, never lost)."""
+        return {
+            str(eid) for eid, rec in (state.get("evidence") or {}).items()
+            if isinstance(rec, Mapping)
+            and parse_status(rec.get("status", "")) is Status.FAIL
+        }
+
+    def _validate_transaction(self, baseline: dict, final: dict) -> None:
+        """Fail closed on any invariant the transaction itself would break.
+
+        Problems that ALREADY existed in the freshly-read durable state are not
+        introduced by this write, so they are compared as sets and only NEW
+        problems (or a lost FAIL) abort the commit.  This preserves the existing
+        "tampered state evaluates as BLOCKED" semantics while guaranteeing a
+        writer can never persist a stale snapshot over newer authorization.
+        """
+        baseline_fails = self._fail_evidences(baseline)
+        final_fails = self._fail_evidences(final)
+        lost = sorted(baseline_fails - final_fails)
+        if lost:
+            raise LedgerIntegrityError(
+                "transaction would lose a durable FAIL: " + ", ".join(lost)
+            )
+        base_problems = set(self._check_index_problems_for(baseline))
+        final_problems = set(self._check_index_problems_for(final))
+        introduced = sorted(final_problems - base_problems)
+        if introduced:
+            raise LedgerIntegrityError(
+                "transaction would introduce check_index inconsistency: "
+                + "; ".join(introduced)
+            )
+        # EXT-01: the manifest is append-only. No transaction may remove an id
+        # that was already recorded, and no transaction may introduce a new
+        # manifest integrity problem. This closes the in-process laundering path
+        # even for callers that hold the external key.
+        base_manifest = [
+            str(i) for i in (baseline.get(_EVIDENCE_MANIFEST_FIELD) or [])
+        ]
+        final_manifest = [
+            str(i) for i in (final.get(_EVIDENCE_MANIFEST_FIELD) or [])
+        ]
+        lost_manifest = sorted(set(base_manifest) - set(final_manifest))
+        if lost_manifest:
+            raise LedgerIntegrityError(
+                "transaction would remove evidence from the append-only manifest: "
+                + ", ".join(lost_manifest)
+            )
+        base_mprob = set(self._evidence_manifest_problems_for(baseline))
+        final_mprob = set(self._evidence_manifest_problems_for(final))
+        introduced_mprob = sorted(final_mprob - base_mprob)
+        if introduced_mprob:
+            raise LedgerIntegrityError(
+                "transaction would introduce evidence-manifest inconsistency: "
+                + "; ".join(introduced_mprob)
+            )
+        base_nonces = baseline.get("used_proof_nonces") or {}
+        for nonce, eid in (final.get("used_proof_nonces") or {}).items():
+            prior = base_nonces.get(nonce)
+            if prior is not None and str(prior) == str(eid):
+                # Pre-existing owner: never invalidate an unrelated write just
+                # because this process has a different ledger key. Unverifiable
+                # bindings are reported by verify_ledger_integrity() separately.
+                continue
+            expected = read_binding(final, DOMAIN_PROOF_NONCE, str(nonce))
+            if not self.ledger_integrity.verify(
+                DOMAIN_PROOF_NONCE,
+                {"nonce": str(nonce), "evidence_id": str(eid)},
+                expected,
+                record_id=str(nonce),
+            ):
+                raise LedgerIntegrityError(
+                    f"transaction would persist an unbound proof-nonce owner: {nonce}"
+                )
+
+    def _mutate(self, fn: Callable[[dict], object]) -> object:
+        """Apply ``fn`` to FRESH durable state inside ONE cross-process transaction.
+
+        Steps (T1): acquire the cross-process lock; reload durable state; rebind
+        derived views; run ``fn``; validate invariants; fsync+replace; adopt the
+        committed state.  A nested call shares the outer transaction's fresh
+        state (re-entrant), so qualification + nonce consumption + history are
+        one atomic commit.  Any failure restores the caller's previous snapshot
+        and writes nothing.
+        """
+        with ledger_critical_section(self.state_path):
+            depth = getattr(self, "_txn_depth", 0)
+            if depth:
+                # Re-entrant: the outer transaction already owns fresh state.
+                self._txn_depth = depth + 1
+                try:
+                    return fn(self._state)
+                finally:
+                    self._txn_depth = depth
+            # A2: keep object identity. Callers (eco/runner/tests) hold live
+            # references to self._state / self._inputs / the spec caches.
+            prev_state = json.loads(
+                json.dumps(self._state, sort_keys=True, default=str)
+            )
+            self._txn_depth = 1
+            committed = False
+            try:
+                # A1: reload when (and only when) another process has committed a
+                # newer durable snapshot. When the disk fingerprint is unchanged,
+                # this instance's in-memory state is already fresh and may hold
+                # deliberate caller edits that must not be discarded.
+                if not self.durable_state_is_current():
+                    fresh = self._load_state_fresh()
+                    self._state.clear()
+                    self._state.update(fresh)
+                self._refresh_derived_views()
+                # Legacy index migration is part of the same committed write.
+                self._migrate_check_index()
+                baseline = json.loads(
+                    json.dumps(self._state, sort_keys=True, default=str)
+                )
+                result = fn(self._state)
+                self._validate_transaction(baseline, self._state)
+                self._save()  # fsync + os.replace, still under the lock
+                self._disk_fingerprint = _state_fingerprint(self._state)
+                committed = True
+                return result
+            except BaseException:
+                if not committed:
+                    self._state.clear()
+                    self._state.update(prev_state)
+                    self._refresh_derived_views()
+                raise
+            finally:
+                self._txn_depth = 0
+
+    def _check_index_problems_for(self, state: Mapping, check_id: str | None = None) -> list[str]:
+        """Index integrity over an explicit state mapping (used in validation)."""
+        saved = self._state
+        try:
+            self._state = state
+            return self._check_index_problems(check_id)
+        finally:
+            self._state = saved
+
+    @contextlib.contextmanager
+    def _fresh_read(self):
+        """A1: read GA/ECO evidence under the state lock from durable state.
+
+        A2: the reload is in-place (clear/update) so caller-held views of the
+        controller state keep their object identity.  After the read the
+        previous snapshot is restored in place: reads never mutate durability,
+        and every later write reloads fresh under :meth:`_mutate` anyway.
+        """
+        with ledger_critical_section(self.state_path):
+            if getattr(self, "_txn_depth", 0):
+                # Already inside a transaction: this state IS the fresh read.
+                yield self._state
+                return
+            prev = json.loads(json.dumps(self._state, sort_keys=True, default=str))
+            if not self.durable_state_is_current():
+                fresh = self._load_state_fresh()
+                self._state.clear()
+                self._state.update(fresh)
+            self._refresh_derived_views()
+            try:
+                yield self._state
+            finally:
+                self._state.clear()
+                self._state.update(prev)
+                self._refresh_derived_views()
 
     def _require_active(self) -> None:
         if self._state["run_status"] == "CANCELLED":
@@ -1063,32 +1550,298 @@ class GateController:
         verification (empty list = all verified). Unknown domains without a
         registered payload resolver are skipped; Agent 9 registers its evidence
         domain in ``BOUND_PAYLOAD_RESOLVERS`` to include it here.
+
+        R7.1: the check_index is additionally cross-checked against the MAC-
+        bound evidence records, so a ledger-only insertion of a *new* index key
+        (which has no binding to iterate over) is still reported. Problems are
+        sorted and de-duplicated.
         """
+        return self._verify_ledger_integrity_for(self._state)
+
+    def _verify_ledger_integrity_for(self, state: Mapping) -> list[str]:
+        """Same verification, over an explicitly supplied (fresh) state."""
         problems: list[str] = []
-        bindings = self._state.get(_LEDGER_BINDINGS_FIELD) or {}
+        bindings = state.get(_LEDGER_BINDINGS_FIELD) or {}
         for domain, records in bindings.items():
             resolver = BOUND_PAYLOAD_RESOLVERS.get(domain)
             if resolver is None:
                 continue
             for record_id, expected in records.items():
-                payload = resolver(self._state, record_id)
+                payload = resolver(state, record_id)
                 if not self.ledger_integrity.verify(
                     domain, payload, expected, record_id=record_id
                 ):
                     problems.append(f"{domain}:{record_id}")
-        return sorted(problems)
+        problems.extend(self._check_index_problems_for(state))
+        # A MAC-valid index binding must still cover every check key present in
+        # the ledger: an attacker who adds a brand-new key has no binding to
+        # iterate, so report that absence explicitly (fail closed).
+        for cid in state.get("check_index") or {}:
+            expected = read_binding(state, DOMAIN_CHECK_INDEX, str(cid))
+            if not expected:
+                problems.append(f"{DOMAIN_CHECK_INDEX}:{cid}:unbound-index")
+        # EXT-01: integrity is not only "does this binding match this record" —
+        # it must also prove that NO record was erased. The append-only manifest
+        # is checked here so the authoritative qualification path fails closed
+        # on a whole-record deletion, even when every remaining binding verifies.
+        problems.extend(self._evidence_manifest_problems_for(state))
+        return sorted(set(problems))
+
+    # -- EXT-01: append-only evidence manifest --------------------------------
+    def _evidence_manifest_problems_for(self, state: Mapping) -> list[str]:
+        """Detect deleted / unmanifested / unbound evidence in *any* state.
+
+        Binds the COMPLETE set of evidence ids ever recorded. A key-free ledger
+        writer can delete a record and its own binding, but cannot delete the
+        id from this MAC-bound manifest (or delete the manifest itself) without
+        leaving a detectable problem. No migration from remaining evidence is
+        performed: that is precisely the laundering step that caused EXT-01.
+        """
+        manifest = state.get(_EVIDENCE_MANIFEST_FIELD)
+        evidence = state.get("evidence") or {}
+        # Only records that were actually recorded through the authoritative
+        # boundary carry an evidence binding. Legacy/unbound records injected
+        # directly into state are already non-authoritative at evaluation and
+        # must not be forced into the manifest (keeps legacy fixtures working).
+        bound_ids = {str(eid) for eid in (state.get("evidence_integrity") or {})}
+        problems: list[str] = []
+        if isinstance(manifest, (str, bytes)) or (
+            manifest is not None and not isinstance(manifest, (list, tuple))
+        ):
+            return [f"{DOMAIN_EVIDENCE_MANIFEST}:invalid-manifest-type"]
+        ids: list[str] = []
+        if manifest is None:
+            if bound_ids:
+                problems.append(f"{DOMAIN_EVIDENCE_MANIFEST}:missing-manifest")
+        else:
+            ids = [str(i) for i in manifest]
+            if len(ids) != len(set(ids)):
+                problems.append(f"{DOMAIN_EVIDENCE_MANIFEST}:duplicate-ids")
+            expected = read_binding(
+                state, DOMAIN_EVIDENCE_MANIFEST, _EVIDENCE_MANIFEST_RECORD
+            )
+            payload = _evidence_manifest_payload(state, _EVIDENCE_MANIFEST_RECORD)
+            if not expected:
+                if ids or bound_ids:
+                    problems.append(f"{DOMAIN_EVIDENCE_MANIFEST}:unbound-manifest")
+            elif not self.ledger_integrity.verify(
+                DOMAIN_EVIDENCE_MANIFEST,
+                payload,
+                expected,
+                record_id=_EVIDENCE_MANIFEST_RECORD,
+            ):
+                problems.append(f"{DOMAIN_EVIDENCE_MANIFEST}:mac-invalid")
+            manifested = set(ids)
+            for eid in ids:
+                if str(eid) not in evidence:
+                    problems.append(
+                        f"{DOMAIN_EVIDENCE_MANIFEST}:deleted-evidence:{eid}"
+                    )
+            for eid in bound_ids:
+                if eid not in manifested:
+                    problems.append(
+                        f"{DOMAIN_EVIDENCE_MANIFEST}:unmanifested-evidence:{eid}"
+                    )
+        return sorted(set(problems))
+
+    def _bind_evidence_manifest(self) -> None:
+        """MAC-bind the current append-only manifest under the external key.
+
+        Caller must hold the ledger critical section; this is invoked from the
+        same atomic step that records new evidence.
+        """
+        write_binding(
+            self._state,
+            DOMAIN_EVIDENCE_MANIFEST,
+            _EVIDENCE_MANIFEST_RECORD,
+            self.ledger_integrity.mac(
+                DOMAIN_EVIDENCE_MANIFEST,
+                _evidence_manifest_payload(self._state, _EVIDENCE_MANIFEST_RECORD),
+                record_id=_EVIDENCE_MANIFEST_RECORD,
+            ),
+        )
+
+    # -- R7.1: authoritative check_index integrity ----------------------------
+    def _check_index_evidence_problems(self, check_id: str) -> list[str]:
+        """Structural (key-independent) integrity problems for one index entry.
+
+        These are checked even for legacy unbound entries so that a ledger-only
+        substitution of an evidence_id from another check is always detected.
+        Missing *bindings* are deliberately NOT part of this set: legacy entries
+        are migrated on load/first write and remain evaluable, while new writes
+        always carry a MAC.
+        """
+        return self._check_index_evidence_problems_for(self._state, check_id)
+
+    def _check_index_evidence_problems_for(
+        self, state: Mapping, check_id: str
+    ) -> list[str]:
+        """Structural index problems over an explicitly supplied (fresh) state."""
+        idx = state.get("check_index") or {}
+        ids = idx.get(check_id)
+        if ids is None:
+            return []
+        if isinstance(ids, (str, bytes)) or not isinstance(ids, (list, tuple)):
+            return [f"{DOMAIN_CHECK_INDEX}:{check_id}:invalid-index-type"]
+        problems: list[str] = []
+        seen: set[str] = set()
+        evidence = state.get("evidence") or {}
+        for raw_eid in ids:
+            eid = str(raw_eid)
+            if eid in seen:
+                problems.append(f"{DOMAIN_CHECK_INDEX}:{check_id}:duplicate:{eid}")
+            seen.add(eid)
+            record = evidence.get(eid)
+            if not isinstance(record, Mapping):
+                problems.append(
+                    f"{DOMAIN_CHECK_INDEX}:{check_id}:missing-evidence:{eid}"
+                )
+                continue
+            if str(record.get("check_id", "")) != str(check_id):
+                problems.append(
+                    f"{DOMAIN_CHECK_INDEX}:{check_id}:check-mismatch:{eid}"
+                )
+        return problems
+
+    def _check_index_problems(self, check_id: str | None = None) -> list[str]:
+        """Full index integrity problems (structural + MAC), fail closed.
+
+        When ``check_id`` is supplied only that index key is inspected; with no
+        argument every key is inspected, including the same evidence_id being
+        referenced by two different checks (cross-check reuse).
+        """
+        idx = self._state.get("check_index") or {}
+        cids = [check_id] if check_id is not None else list(idx)
+        problems: list[str] = []
+        owners: dict[str, str] = {}
+        for cid in cids:
+            cid = str(cid)
+            problems.extend(self._check_index_evidence_problems(cid))
+            expected = read_binding(self._state, DOMAIN_CHECK_INDEX, cid)
+            payload = _check_index_payload(self._state, cid)
+            if expected and not self.ledger_integrity.verify(
+                DOMAIN_CHECK_INDEX, payload, expected, record_id=cid
+            ):
+                problems.append(f"{DOMAIN_CHECK_INDEX}:{cid}:mac-invalid")
+            for raw_eid in idx.get(cid) or ():
+                eid = str(raw_eid)
+                prior = owners.get(eid)
+                if prior is not None and prior != cid:
+                    problems.append(
+                        f"{DOMAIN_CHECK_INDEX}:{cid}:cross-check-reuse:{eid}"
+                    )
+                owners[eid] = cid
+        # B3: enumerate authoritative membership too, so an attacker who DELETES
+        # an index key (or one evidence_id from it) is detected. Without this,
+        # iterating ledger_bindings alone would miss deleted bindings.
+        authoritative = self._authoritative_index_members()
+        for cid in set(str(c) for c in cids) | set(authoritative):
+            expected_ids = set(authoritative.get(cid, ()))
+            actual_ids = set(str(i) for i in (idx.get(cid) or ()))
+            for eid in sorted(expected_ids - actual_ids):
+                problems.append(
+                    f"{DOMAIN_CHECK_INDEX}:{cid}:deleted-evidence:{eid}"
+                )
+        return sorted(set(problems))
+
+    def _bind_check_index(self, check_id: str) -> None:
+        """MAC-bind the current ``check_index[check_id]`` under the external key.
+
+        Caller must hold ``_PROOF_RECORD_LOCK`` when mutating persisted state.
+        """
+        ids = list((self._state.get("check_index") or {}).get(check_id) or ())
+        payload = check_index_mac_payload(check_id, ids)
+        write_binding(
+            self._state, DOMAIN_CHECK_INDEX, str(check_id),
+            self.ledger_integrity.mac(
+                DOMAIN_CHECK_INDEX, payload, record_id=str(check_id)
+            ),
+        )
+
+    def _authoritative_index_members(self) -> dict[str, list[str]]:
+        """Rebuild index membership from MAC-bound evidence, never from the index.
+
+        Only evidence records whose external-key binding still verifies, and
+        whose MAC-bound envelope (when present) carries the same check_id,
+        contribute. This is the authoritative membership set used both to detect
+        DELETED index entries and to migrate legacy state.
+        """
+        evidence = self._state.get("evidence") or {}
+        provenance = self._state.get("evidence_provenance") or {}
+        integrity = self._state.get("evidence_integrity") or {}
+        envelopes = self._state.get("r6_evidence_envelopes") or {}
+        members: dict[str, list[str]] = {}
+        for eid in sorted(evidence):
+            rec = evidence[eid]
+            if not isinstance(rec, Mapping):
+                continue
+            expected = integrity.get(eid)
+            if not self.ledger_integrity.verify(
+                DOMAIN_EVIDENCE,
+                {"evidence": rec, "provenance": provenance.get(eid) or {}},
+                expected,
+                record_id=str(eid),
+            ):
+                continue
+            cid = str(rec.get("check_id", "") or "")
+            if not cid:
+                continue
+            env = envelopes.get(eid)
+            if isinstance(env, Mapping):
+                try:
+                    from .provenance import EvidenceEnvelope
+                    from .r6_authority import get_trust
+
+                    verified_env = EvidenceEnvelope.from_dict(env, get_trust())
+                    if verified_env.check_id != cid:
+                        continue
+                except Exception:  # noqa: BLE001 - unverifiable envelope fails closed
+                    continue
+            members.setdefault(cid, []).append(str(eid))
+        return members
+
+    def _migrate_check_index(self) -> None:
+        """Migrate legacy index entries by REBUILDING from MAC-bound evidence.
+
+        The raw legacy index is never signed. A key is migrated only when its
+        membership already equals the authoritative set derived from MAC-bound
+        evidence; an inconsistent (tampered / deleted / swapped) legacy entry is
+        left unbound and reported by ``verify_ledger_integrity``. Caller must
+        hold ``_PROOF_RECORD_LOCK``.
+        """
+        idx = self._state.get("check_index") or {}
+        authoritative = self._authoritative_index_members()
+        for cid in list(idx):
+            cid = str(cid)
+            if read_binding(self._state, DOMAIN_CHECK_INDEX, cid):
+                continue  # already bound: never overwrite a possibly forged MAC
+            current = [str(i) for i in (idx.get(cid) or ())]
+            expected = authoritative.get(cid, [])
+            if not expected or len(current) != len(expected):
+                continue
+            if set(current) != set(expected):
+                continue  # tampered legacy index: never launder it
+            # Rebuild from the authoritative source (MAC-bound evidence).
+            idx[cid] = list(expected)
+            self._bind_check_index(cid)
 
     # -- spec registration ----------------------------------------------------
     def register_check_spec(self, spec: CheckSpec) -> CheckSpec:
+        """Transaction-wrapped registration (fresh read under the state lock)."""
+        return self._mutate(lambda fresh: self._register_check_spec_locked(spec))
+
+    def _register_check_spec_locked(self, spec: CheckSpec) -> CheckSpec:
         self._require_active()
         spec.validate()
         self.check_specs[spec.check_id] = spec
         self._state["check_specs"][spec.check_id] = spec.to_dict()
-        self._save()
         return spec
 
     def register_gate(self, spec: GateSpec) -> GateSpec:
         """Register an authoritative gate specification (persisted across restart)."""
+        return self._mutate(lambda fresh: self._register_gate_locked(spec))
+
+    def _register_gate_locked(self, spec: GateSpec) -> GateSpec:
         self._require_active()
         spec.validate()
         if spec.upstream and set(spec.upstream) == {spec.gate_id}:
@@ -1100,7 +1853,6 @@ class GateController:
             self._state["check_specs"][cid] = spec.checks[cid].to_dict()
         self.gate_specs[spec.gate_id] = spec
         self._state["gate_specs"][spec.gate_id] = spec.to_dict()
-        self._save()
         return spec
 
     # -- authoritative state / trust boundary (R4) ----------------------------
@@ -1166,6 +1918,17 @@ class GateController:
         self, gate_id: str, required_checks: Sequence[str],
         required_view: str | None, upstream_gates: Iterable[str],
     ) -> None:
+        """Transaction wrapper: used by evaluation and direct callers alike."""
+        self._mutate(
+            lambda fresh: self._record_gate_definition_locked(
+                gate_id, required_checks, required_view, upstream_gates
+            )
+        )
+
+    def _record_gate_definition_locked(
+        self, gate_id: str, required_checks: Sequence[str],
+        required_view: str | None, upstream_gates: Iterable[str],
+    ) -> None:
         """Record the authoritative required checks from an explicit evaluation.
 
         A caller's *explicit* declaration is authoritative (unlike the cached
@@ -1200,14 +1963,15 @@ class GateController:
         )
         if gate_id in self._unverifiable_definitions:
             self._unverifiable_definitions.remove(gate_id)
-        self._save()
 
     # -- input registry -------------------------------------------------------
     def register_input(self, label: str, path: str) -> str:
         """Register a file whose change invalidates dependent evidence."""
+        return self._mutate(lambda fresh: self._register_input_locked(label, path))
+
+    def _register_input_locked(self, label: str, path: str) -> str:
         self._require_active()
-        self._inputs[label] = str(path)
-        self._save()  # persisted so a restarted controller still detects staleness
+        self._inputs[label] = str(path)  # live view into self._state
         return self.current_input_hashes().get(label, "<missing>")
 
     def register_inputs(self, mapping: Mapping[str, str]) -> None:
@@ -1253,12 +2017,20 @@ class GateController:
         self, name: str, value: object, *, source: str = "", evidence_ref: str = ""
     ) -> dict:
         """Register a validated design fact used to corroborate N/A decisions."""
+        return self._mutate(
+            lambda fresh: self._register_design_fact_locked(
+                name, value, source=source, evidence_ref=evidence_ref
+            )
+        )
+
+    def _register_design_fact_locked(
+        self, name: str, value: object, *, source: str = "", evidence_ref: str = ""
+    ) -> dict:
         self._require_active()
         if not name:
             raise ValueError("design fact needs a name")
         entry = {"value": value, "source": source, "evidence_ref": evidence_ref}
         self._state["design_facts"][name] = entry
-        self._save()
         return entry
 
     # -- evidence -------------------------------------------------------------
@@ -1330,86 +2102,87 @@ class GateController:
         ``claims`` maps ``proof.nonce -> evidence_id``.  Returns False (and
         mutates nothing) when ANY nonce is already owned by a DIFFERENT
         evidence item, when a persisted binding is missing/invalid, or when the
-        state cannot be written.  Re-claiming a nonce for the SAME evidence id
-        is idempotent so repeated gate evaluations never self-deny.
+        transaction cannot be committed.  Re-claiming a nonce for the SAME
+        evidence id is idempotent so repeated gate evaluations never self-deny.
 
-        The check-and-consume runs in one process-wide critical section and is
-        persisted to state.json with an external-key MAC binding; a fresh
-        process with the same provisioned key sees the same ledger, while a
-        ledger-only attacker cannot rewrite ownership.
+        A3: there is NO second writer here.  The check, the durable claim and
+        its external-key binding all run through :meth:`_mutate` on FRESH state
+        under the state lock; the nonce ledger lives inside that same state
+        file (lock order: state lock -> same-state nonce ledger).  A concurrent
+        process therefore sees the winner's durable owner and fails closed.
         """
         if not claims:
             return True
-        with _PROOF_RECORD_LOCK:
-            try:
-                # Re-read the durable ledger so a second process's claim cannot
-                # be missed by an in-memory snapshot (cross-run replay).
-                disk_state: dict | None = None
-                if os.path.exists(self.state_path):
-                    with open(self.state_path, "r", encoding="utf-8") as fh:
-                        disk_state = json.load(fh)
-                registry = dict(
-                    (disk_state or self._state).get("used_proof_nonces", {}) or {}
-                )
-                bindings = (disk_state or self._state).get(_LEDGER_BINDINGS_FIELD, {}) or {}
-                nonces_bindings = bindings.get(DOMAIN_PROOF_NONCE, {}) or {}
-                # 1. validate every existing binding we rely on + detect conflicts
-                for nonce, eid in claims.items():
-                    if not nonce:
-                        return False
-                    prior = registry.get(nonce)
-                    if prior is not None and str(prior) != str(eid):
-                        return False
-                    if prior is not None:
-                        expected = nonces_bindings.get(nonce)
-                        if not self.ledger_integrity.verify(
-                            DOMAIN_PROOF_NONCE,
-                            {"nonce": nonce, "evidence_id": prior},
-                            expected,
-                            record_id=nonce,
-                        ):
-                            return False
-                # 2. consume (idempotent) + persist atomically
-                changed = False
-                new_macs: dict[str, str] = {}
-                for nonce, eid in claims.items():
-                    if registry.get(nonce) is None:
-                        registry[nonce] = str(eid)
-                        new_macs[nonce] = self.ledger_integrity.mac(
-                            DOMAIN_PROOF_NONCE,
-                            {"nonce": nonce, "evidence_id": str(eid)},
-                            record_id=nonce,
-                        )
-                        write_binding(
-                            self._state, DOMAIN_PROOF_NONCE, nonce, new_macs[nonce]
-                        )
-                        changed = True
-                self._state["used_proof_nonces"] = dict(registry)
-                if disk_state is not None:
-                    disk_state["used_proof_nonces"] = dict(registry)
-                    disk_binding = disk_state.setdefault(_LEDGER_BINDINGS_FIELD, {})
-                    disk_nonces = disk_binding.setdefault(DOMAIN_PROOF_NONCE, {})
-                    for nonce, mac_value in new_macs.items():
-                        disk_nonces[nonce] = mac_value
-                    # atomic replace under the lock
-                    directory = os.path.dirname(os.path.abspath(self.state_path)) or "."
-                    os.makedirs(directory, exist_ok=True)
-                    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".nonce-", suffix=".json")
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                            json.dump(disk_state, fh, indent=2, sort_keys=True)
-                        os.replace(tmp, self.state_path)
-                    except BaseException:
-                        if os.path.exists(tmp):
-                            os.unlink(tmp)
-                        raise
-                elif changed:
-                    self._save()
-                return True
-            except Exception:  # noqa: BLE001 - fail closed
+        try:
+            return bool(self._mutate(lambda fresh: self._consume_nonces_locked(claims)))
+        except Exception:  # noqa: BLE001 - fail closed, no write occurred
+            return False
+
+    def _consume_nonces_locked(self, claims: Mapping[str, str]) -> bool:
+        """Check-then-consume against the transaction's fresh state (no I/O)."""
+        registry = dict(self._state.get("used_proof_nonces") or {})
+        bindings = self._state.get(_LEDGER_BINDINGS_FIELD, {}) or {}
+        nonces_bindings = bindings.get(DOMAIN_PROOF_NONCE, {}) or {}
+        # 1. validate ALL claims before mutating anything (fail closed as a unit)
+        for nonce, eid in claims.items():
+            if not nonce:
                 return False
+            prior = registry.get(nonce)
+            if prior is not None and str(prior) != str(eid):
+                return False  # one nonce -> at most one qualified gate/evidence
+            if prior is not None and not self.ledger_integrity.verify(
+                DOMAIN_PROOF_NONCE,
+                {"nonce": nonce, "evidence_id": prior},
+                nonces_bindings.get(nonce),
+                record_id=nonce,
+            ):
+                return False
+        # 2. consume (idempotent) + bind under the same transaction
+        changed = False
+        for nonce, eid in claims.items():
+            if nonce in registry:
+                continue
+            registry[nonce] = str(eid)
+            write_binding(
+                self._state, DOMAIN_PROOF_NONCE, nonce,
+                self.ledger_integrity.mac(
+                    DOMAIN_PROOF_NONCE,
+                    {"nonce": nonce, "evidence_id": str(eid)},
+                    record_id=nonce,
+                ),
+            )
+            changed = True
+        if changed:
+            self._state["used_proof_nonces"] = registry
+        return True
 
     def record_evidence(
+        self,
+        ev: Evidence,
+        *,
+        allow_while_cancelled: bool = False,
+        engineering_outcome: Mapping | None = None,
+        check_spec: CheckSpec | None = None,
+        strict: bool = True,
+        simulated: str = "",
+    ) -> Evidence:
+        """Record evidence in ONE transaction (fresh read, validate, fsync).
+
+        A5: every state mutation below now happens inside :meth:`_mutate`; the
+        former out-of-lock `_save()` has been removed from the write path.
+        """
+        return self._mutate(
+            lambda fresh: self._record_evidence_locked(
+                ev,
+                allow_while_cancelled=allow_while_cancelled,
+                engineering_outcome=engineering_outcome,
+                check_spec=check_spec,
+                strict=strict,
+                simulated=simulated,
+            )
+        )
+
+    def _record_evidence_locked(
         self,
         ev: Evidence,
         *,
@@ -1494,10 +2267,21 @@ class GateController:
         )
         self._state["evidence_integrity"][ev.evidence_id] = _ebind
         write_binding(self._state, DOMAIN_EVIDENCE, ev.evidence_id, _ebind)
+        # EXT-01: append to the authoritative evidence manifest and re-bind it
+        # inside the SAME transaction as the record/envelope/index/nonce write.
+        # The manifest is never pruned: a later deletion of this record (even
+        # with all of its own bindings removed) stays detectable.
+        _manifest = self._state.get(_EVIDENCE_MANIFEST_FIELD)
+        if not isinstance(_manifest, list):
+            _manifest = []
+            self._state[_EVIDENCE_MANIFEST_FIELD] = _manifest
+        if ev.evidence_id not in _manifest:
+            _manifest.append(ev.evidence_id)
+        self._bind_evidence_manifest()
         # R6 Stage 2: also create a signed evidence envelope for the authoritative
         # state machine. Provenance is fixed at creation from the trusted input;
         # later ledger edits cannot relabel it (MAC verification fails).
-        with _PROOF_RECORD_LOCK:
+        with ledger_critical_section(self.state_path):
             try:
                 from .r6_authority import get_trust
                 from .provenance import make_envelope, Provenance
@@ -1561,15 +2345,22 @@ class GateController:
                 )
             except Exception:  # noqa: BLE001 - authoritative check fails closed later
                 pass
-        idx = self._state["check_index"].setdefault(ev.check_id, [])
-        idx.append(ev.evidence_id)
+            # R7.1: index membership is an authorization decision. Write it
+            # INSIDE the record/envelope/nonce critical section and bind the
+            # full check_id -> [evidence_id, ...] list under the external key in
+            # the same atomic step. A stale snapshot can no longer overwrite a
+            # concurrent index update.
+            idx = self._state["check_index"].setdefault(ev.check_id, [])
+            if ev.evidence_id not in idx:
+                idx.append(ev.evidence_id)
+            self._bind_check_index(ev.check_id)
         if spec is not None or engineering_outcome is not None:
             self._state["submissions"][ev.evidence_id] = {
                 "check_id": ev.check_id,
                 "spec": spec.to_dict() if spec is not None else None,
                 "engineering_outcome": dict(engineering_outcome or {}),
             }
-        self._save()
+        # No _save(): _mutate owns validation + fsync + replace for this write.
         return ev
 
     def record_check_result(
@@ -1635,25 +2426,81 @@ class GateController:
         )
 
     def latest_evidence(self, check_id: str) -> Evidence | None:
-        ids = self._state["check_index"].get(check_id) or []
+        """Resolve the newest evidence that ACTUALLY belongs to *check_id*.
+
+        A1/D4: ECO pre-acceptance revalidation and every other GA reader call
+        this method. It therefore takes the cross-process state lock and reads
+        a FRESH durable snapshot; a controller loaded before a concurrent FAIL
+        can no longer return its stale PASS to ECO.
+
+        A7-P0-01: the unauthenticated index is only a lookup hint. Every
+        candidate's own (MAC-bound) record check_id is authoritative. A stale,
+        duplicated, cross-check or invalid-MAC index entry makes the whole
+        resolution non-authorizing (fail closed) instead of silently selecting
+        another entry.
+        """
+        with self._fresh_read() as state:
+            return self._latest_evidence_from(state, check_id)
+
+    def _latest_evidence_from(self, state: Mapping, check_id: str) -> Evidence | None:
+        ids = (state.get("check_index") or {}).get(check_id) or []
         if not ids:
             return None
-        return Evidence.from_dict(self._state["evidence"][ids[-1]])
+        if self._check_index_evidence_problems_for(state, check_id):
+            return None
+        evidence = state.get("evidence") or {}
+        for raw_eid in reversed(list(ids)):
+            rec = evidence.get(str(raw_eid))
+            if not isinstance(rec, Mapping) or str(rec.get("check_id", "")) != str(check_id):
+                return None
+            try:
+                # Deep-copy so a caller mutating the returned Evidence cannot
+                # mutate the controller's (or any durable) snapshot in place.
+                ev = Evidence.from_dict(copy.deepcopy(rec))
+            except Exception:  # noqa: BLE001 - malformed record fails closed
+                return None
+            if ev.check_id != check_id:
+                return None
+            # A different external key (unprovisioned cross-process flow) makes
+            # EVERY binding unverifiable; legacy semantics keep the PASS-shaped
+            # decision but ``authoritative_qualification`` denies it. Only an
+            # index MAC failure on otherwise-verifiable evidence is a hard block.
+            expected = read_binding(state, DOMAIN_CHECK_INDEX, str(check_id))
+            payload = _check_index_payload(state, str(check_id))
+            if expected and self._integrity_ok(ev) and not self.ledger_integrity.verify(
+                DOMAIN_CHECK_INDEX, payload, expected, record_id=str(check_id)
+            ):
+                return None
+            return ev
+        return None
 
     def all_evidence(self, check_id: str | None = None) -> list[Evidence]:
+        """All durable evidence, read under the state lock (A1/D4)."""
+        with self._fresh_read() as state:
+            return self._all_evidence_from(state, check_id)
+
+    def _all_evidence_from(self, state: Mapping, check_id: str | None) -> list[Evidence]:
         if check_id is None:
-            recs = self._state["evidence"].values()
+            recs = list((state.get("evidence") or {}).values())
         else:
-            ids = self._state["check_index"].get(check_id) or []
-            recs = [self._state["evidence"][i] for i in ids]
-        return [Evidence.from_dict(r) for r in recs]
+            if self._check_index_evidence_problems_for(state, check_id):
+                return []
+            ids = (state.get("check_index") or {}).get(check_id) or []
+            evidence = state.get("evidence") or {}
+            recs = [evidence[str(i)] for i in ids if str(i) in evidence]
+        # Deep-copy: returned Evidence objects are detached from durable state.
+        return [Evidence.from_dict(copy.deepcopy(r)) for r in recs]
 
     # -- advisory summaries (never authorize anything) ------------------------
     def record_llm_summary(self, text: str, *, author: str = "llm") -> dict:
+        return self._mutate(
+            lambda fresh: self._record_llm_summary_locked(text, author=author)
+        )
+
+    def _record_llm_summary_locked(self, text: str, *, author: str = "llm") -> dict:
         self._require_active()
         entry = {"author": author, "text": text, "created_utc": utc_now()}
         self._state["summaries"].append(entry)
-        self._save()
         return entry
 
     @property
@@ -1704,6 +2551,9 @@ class GateController:
 
     def add_waiver(self, waiver: Waiver) -> Waiver:
         """Record a waiver with enforced identity, scope, policy and revision."""
+        return self._mutate(lambda fresh: self._add_waiver_locked(waiver))
+
+    def _add_waiver_locked(self, waiver: Waiver) -> Waiver:
         self._require_active()
         if not waiver.check_id.strip():
             raise ValueError("waiver must name a check_id (identity)")
@@ -1735,7 +2585,6 @@ class GateController:
             self._state, DOMAIN_WAIVER, waiver.waiver_id,
             self.ledger_integrity.mac(DOMAIN_WAIVER, _w, record_id=waiver.waiver_id),
         )
-        self._save()
         return waiver
 
     def _waiver_expired(self, waiver: Waiver) -> bool:
@@ -1781,6 +2630,28 @@ class GateController:
         required_view: str | None = None,
         upstream_gates: Iterable[str] = (),
     ) -> GateDecision:
+        """Authoritative gate decision in ONE transaction (A1 / C4 fix).
+
+        The cross-process lock is taken and durable state reloaded at ENTRY,
+        so ``qualified`` is computed from a fresh snapshot. No authorization
+        decision is ever derived from a pre-lock ``self._state``.
+        """
+        return self._mutate(
+            lambda fresh: self._evaluate_gate_entry_locked(
+                gate_id, required_checks, stage=stage, required_view=required_view,
+                upstream_gates=upstream_gates,
+            )
+        )
+
+    def _evaluate_gate_entry_locked(
+        self,
+        gate_id: str,
+        required_checks: Sequence[str],
+        *,
+        stage: str = "",
+        required_view: str | None = None,
+        upstream_gates: Iterable[str] = (),
+    ) -> GateDecision:
         self._require_active()
         self._assert_no_cycles()  # authoritative dependency graph is cycle-free
         # R4: record the authoritative gate definition from this explicit
@@ -1814,6 +2685,24 @@ class GateController:
             visit(gid, [])
 
     def _evaluate_gate(
+        self,
+        gate_id: str,
+        required_checks: Sequence[str],
+        *,
+        stage: str,
+        required_view: str | None,
+        upstream_gates: Iterable[str],
+        visiting: frozenset[str],
+    ) -> GateDecision:
+        """Re-entrant wrapper; the outer evaluate_gate transaction owns the write."""
+        return self._mutate(
+            lambda fresh: self._evaluate_gate_locked(
+                gate_id, required_checks, stage=stage, required_view=required_view,
+                upstream_gates=upstream_gates, visiting=visiting,
+            )
+        )
+
+    def _evaluate_gate_locked(
         self,
         gate_id: str,
         required_checks: Sequence[str],
@@ -1868,6 +2757,8 @@ class GateController:
         waived_checks: list[str] = []
         na_checks: list[str] = []  # valid N/A checks -> disposition NOT_APPLICABLE
         simulated_checks: list[str] = []  # F-01: non-authoritative PASS sources
+        #: R7.1 occupancy: one evidence_id may satisfy at most ONE check per gate.
+        used_evidence: dict[str, str] = {}
 
         # Registered input requirements must be registered and bound.
         if spec:
@@ -1959,6 +2850,74 @@ class GateController:
             ev = self.latest_evidence(check_id)
             waivers = self.waivers_for(gate_id, check_id)
             entry: dict = {"waived": [w.to_dict() for w in waivers]}
+
+            # A7-P0-01: the evidence-to-check identity is the AUTHORITATIVE
+            # binding. Never let a genuine proof for check A satisfy check B.
+            # Structural index problems (stale ref, duplicate, cross-check
+            # reuse, check mismatch) and an invalid MAC on an existing binding
+            # both make the check non-authorizing -> NOT_RUN / BLOCKED.
+            index_problems = self._check_index_problems(check_id)
+            _evidence_verifiable = self._integrity_ok(ev)
+            hard_index_problems = [
+                p for p in index_problems
+                if ":unbound-index" not in p  # legacy entries remain evaluable
+                # Cross-process key mismatch makes all bindings unverifiable;
+                # authority still denies qualification, legacy decisions survive.
+                and not (
+                    ":mac-invalid" in p and not _evidence_verifiable
+                )
+            ]
+            # EXT-01: manifest problems are hard, independent of the legacy
+            # index-migration exemption above. A deleted, unmanifested, unbound
+            # or malformed evidence record can never be laundered into
+            # CLEAN_PASS or downstream authorization. The ONLY exemption mirrors
+            # the existing cross-process key mismatch rule: when the evidence
+            # itself is unverifiable (different process key), the manifest MAC
+            # is likewise unverifiable; authoritative_qualification still denies
+            # qualification, while legacy revalidation diagnostics stay visible.
+            manifest_problems = [
+                p for p in self._evidence_manifest_problems_for(self._state)
+                if not (":mac-invalid" in p and not _evidence_verifiable)
+            ]
+            if manifest_problems:
+                hard_index_problems.extend(manifest_problems)
+                entry["evidence_manifest_problems"] = manifest_problems
+            binding_mismatch = ev is not None and ev.check_id != check_id
+            if hard_index_problems or binding_mismatch:
+                reasons = list(hard_index_problems)
+                if binding_mismatch:
+                    reasons.append(
+                        f"evidence {ev.evidence_id} has check_id "
+                        f"{ev.check_id!r}, required {check_id!r}"
+                    )
+                detail = "; ".join(reasons)
+                entry.update(
+                    status=Status.NOT_RUN.value,
+                    reason="non-authorizing check_index: " + detail,
+                    check_index_problems=hard_index_problems,
+                )
+                if ev is not None:
+                    entry["evidence_id"] = ev.evidence_id
+                blocking.append(f"{check_id}: NOT_RUN ({detail})")
+                check_report[check_id] = entry
+                continue
+
+            if ev is not None:
+                owner = used_evidence.get(ev.evidence_id)
+                if owner is not None and owner != check_id:
+                    detail = (
+                        f"evidence {ev.evidence_id} already satisfies check "
+                        f"{owner!r} and cannot also satisfy {check_id!r}"
+                    )
+                    entry.update(
+                        status=Status.NOT_RUN.value,
+                        reason="duplicate evidence occupancy: " + detail,
+                        evidence_id=ev.evidence_id,
+                    )
+                    blocking.append(f"{check_id}: NOT_RUN ({detail})")
+                    check_report[check_id] = entry
+                    continue
+                used_evidence[ev.evidence_id] = check_id
 
             # F-01: provenance is authoritative only when BOTH the evidence
             # record and the independent persisted provenance map agree it is
@@ -2273,22 +3232,42 @@ class GateController:
             disposition = "CLEAN_PASS"
             reason = "all required checks PASS"
 
-        qualified = decision == "PASS" and not simulated_checks
+        # EXT-05 / B-03: a waived FAIL stays a FAIL. It may be reported as
+        # WAIVED_PASS (decision=PASS, CLI exit 0) for workflow continuity, but it
+        # is NEVER downstream authorization: waived checks are non-authorizing
+        # and must not be laundered into a qualified gate by another check's
+        # genuine proof. This is the authorization counterpart of the F-01
+        # SIMULATED_PASS rule.
+        qualified = (
+            decision == "PASS"
+            and not simulated_checks
+            and not waived_checks
+        )
         # R6 Stage 2: the authoritative state machine is the ONLY authorization
         # source. A PASS-shaped legacy boolean cannot override it.
         if qualified:
             try:
                 from .r6_authority import authoritative_qualification
                 # Only checks that actually carry authorization weight count.
-                # Waived / N-A / simulated checks are deliberately non-authorizing
-                # under policy and must not drag an otherwise clean gate down.
-                _eids = [
-                    v.get("evidence_id") for cid, v in check_report.items()
-                    if isinstance(v, dict) and v.get("evidence_id")
-                    and cid not in waived_checks and cid not in na_checks
-                    and cid not in simulated_checks
-                ]
-                if not authoritative_qualification(self, _eids):
+                # Waived / simulated checks are non-authorizing and gates with
+                # them are already unqualified above. Validated N-A removes a
+                # check from scope and does not carry authorization weight.
+                _eids: list[str] = []
+                _check_bindings: dict[str, str] = {}
+                for cid, v in check_report.items():
+                    if not isinstance(v, dict) or not v.get("evidence_id"):
+                        continue
+                    if cid in waived_checks or cid in na_checks or cid in simulated_checks:
+                        continue
+                    eid = str(v["evidence_id"])
+                    if eid in _eids or cid in _check_bindings:
+                        qualified = False  # duplicate occupancy -> deny
+                        break
+                    _eids.append(eid)
+                    _check_bindings[cid] = eid
+                if qualified and not authoritative_qualification(
+                    self, _eids, check_bindings=_check_bindings
+                ):
                     qualified = False
             except Exception:  # noqa: BLE001
                 qualified = False
@@ -2314,7 +3293,8 @@ class GateController:
                 **gd.to_dict(),
             }
         )
-        self._save()
+        # No _save(): the evaluate_gate transaction commits this history record
+        # together with its definition/nonce/authorization changes.
         return gd
 
     def _last_decision(self, gate_id: str) -> dict | None:
@@ -2324,6 +3304,17 @@ class GateController:
         return None
 
     def can_enter_stage(
+        self, stage: str, gates: Sequence[tuple[str, Sequence[str]]], *,
+        required_view: str | None = None, upstream: Sequence[str] = ()
+    ) -> tuple[bool, list[str]]:
+        """Evaluate every gate in ONE fresh-state transaction (A1)."""
+        return self._mutate(
+            lambda fresh: self._can_enter_stage_locked(
+                stage, gates, required_view=required_view, upstream=upstream
+            )
+        )
+
+    def _can_enter_stage_locked(
         self, stage: str, gates: Sequence[tuple[str, Sequence[str]]], *,
         required_view: str | None = None, upstream: Sequence[str] = ()
     ) -> tuple[bool, list[str]]:
@@ -2341,10 +3332,41 @@ class GateController:
         return (not reasons), reasons
 
     # -- cancellation / restart ----------------------------------------------
+    def durable_cancellation_requested(self) -> bool:
+        """True iff the DURABLE ledger records a cancellation.
+
+        EXT-04: ``_cancel_latch`` and the ``run_status`` property are per-instance
+        views. A cancellation committed by ANOTHER process is invisible to both.
+        This method establishes the missing synchronization edge: it reads the
+        authoritative ``run_status`` from disk INSIDE the same cross-process
+        critical section that :meth:`cancel` uses to commit that status, so a
+        cancellation accepted before the reader's lock acquisition is observed.
+
+        Fail closed: any unreadable/corrupt/non-mapping durable state is treated
+        as cancelled rather than as permission to accept a PASS.
+        """
+        try:
+            with ledger_critical_section(self.state_path):
+                durable = self._raw_disk_state()
+            return str(durable.get("run_status", "")) == "CANCELLED"
+        except Exception:  # noqa: BLE001 - fail closed on any read/lock failure
+            return True
+
     def cancel(self, reason: str) -> None:
+        # Set the immediate latch FIRST (synchronous, before any lock/fsync), so
+        # an in-flight ECO commit guard sees the cancellation. The durable state
+        # is still committed atomically below; a failed transaction still leaves
+        # the latch set (fail closed: cancellation is never silently dropped).
+        self._cancel_latch = str(reason)
+        self._mutate(lambda fresh: self._cancel_locked(reason))
+
+    def cancellation_requested(self) -> bool:
+        """True as soon as cancel() is called, before durable commit."""
+        return bool(self._cancel_latch)
+
+    def _cancel_locked(self, reason: str) -> None:
         self._state["run_status"] = "CANCELLED"
         self._state["cancel_reason"] = reason
-        self._save()
 
     def restart(self, reason: str = "", *, operator: str = "") -> str:
         """Reopen a cancelled run, preserving all recorded evidence.
@@ -2352,6 +3374,12 @@ class GateController:
         A *valid* restart records who/why; this is surfaced in the report and
         gate history. The no-argument form is retained for compatibility.
         """
+        return self._mutate(
+            lambda fresh: self._restart_locked(reason, operator=operator)
+        )
+
+    def _restart_locked(self, reason: str = "", *, operator: str = "") -> str:
+        self._cancel_latch = ""  # restart explicitly clears the immediate latch
         prev = self._state["run_status"]
         self._state["run_status"] = "ACTIVE"
         self._state["cancel_reason"] = ""
@@ -2359,7 +3387,6 @@ class GateController:
             {"from": prev, "reason": reason, "operator": operator,
              "created_utc": utc_now()}
         )
-        self._save()
         return f"run restarted from {prev}; evidence preserved"
 
     @property

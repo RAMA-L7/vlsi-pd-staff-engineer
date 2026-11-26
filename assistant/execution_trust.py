@@ -175,6 +175,9 @@ def _canonical_proof_payload(values: Mapping) -> dict:
         "sampling_limits_unsupported": bool(
             values.get("sampling_limits_unsupported", True)
         ),
+        # R7.1: check_id is MAC-bound so a proof cannot be transplanted to a
+        # different check by a caller/ledger-only attacker.
+        "check_id": str(values.get("check_id", "") or ""),
     }
 
 
@@ -210,6 +213,9 @@ class ExecutionProof:
     containment_claim: str = "none"
     key_ephemeral: bool = False
     sampling_limits_unsupported: bool = True
+    # R7.1: check identity bound at the trusted execution boundary. A proof
+    # issued for check X cannot authorize evidence for check Y.
+    check_id: str = ""
 
     # -- serialization -------------------------------------------------------
 
@@ -262,6 +268,7 @@ class ExecutionProof:
             containment_claim=payload["containment_claim"],
             key_ephemeral=payload["key_ephemeral"],
             sampling_limits_unsupported=payload["sampling_limits_unsupported"],
+            check_id=str(payload.get("check_id", "") or ""),
         )
 
     # -- signing / verification ---------------------------------------------
@@ -995,7 +1002,7 @@ class ExecutionBoundary:
 
     def _empty_state(self, state: ExecutionState, reason: str, *, tool_id: str,
                      argv=(), exit_code=None, candidate_digest="", consumed_digest="",
-                     dependency_digest="") -> ExecutionProof:
+                     dependency_digest="", check_id: str = "") -> ExecutionProof:
         """Build and sign a fail-closed proof without observations."""
         values = dict(
             nonce=secrets.token_hex(16),
@@ -1024,6 +1031,7 @@ class ExecutionBoundary:
             containment_claim="none",
             key_ephemeral=bool(getattr(self.trust, "ephemeral", False)),
             sampling_limits_unsupported=True,
+            check_id=str(check_id or ""),
             mac="",
         )
         values["execution_digest"] = self._execution_digest(values)
@@ -1031,16 +1039,18 @@ class ExecutionBoundary:
 
     def denied_proof(self, argv, *, tool_id: str, reason: str,
                      state: ExecutionState = ExecutionState.UNKNOWN,
-                     exit_code=None, **digests) -> ExecutionProof:
+                     exit_code=None, check_id: str = "", **digests) -> ExecutionProof:
         return self._empty_state(
-            state, reason, tool_id=tool_id, exit_code=exit_code, argv=argv, **digests
+            state, reason, tool_id=tool_id, exit_code=exit_code, argv=argv,
+            check_id=check_id, **digests
         )
 
     def _build_proof(self, *, argv, tool_id, root_pid, guard, exit_code,
                      started_utc, ended_utc, sampling_window_s=0.0,
                      sampling_samples=0, candidate_digest="", consumed_digest="",
                      dependency_digest="", root_image_override=None,
-                     root_image_error=None, descendants_override=None) -> ExecutionProof:
+                     root_image_error=None, descendants_override=None,
+                     check_id: str = "") -> ExecutionProof:
         """Observe the running tree and build a signed, fail-closed proof.
 
         A1/A2: every image must match the FROZEN manifest and argv must match
@@ -1203,6 +1213,7 @@ class ExecutionBoundary:
             containment_claim="none",  # A5: no containment claim
             key_ephemeral=bool(getattr(self.trust, "ephemeral", False)),
             sampling_limits_unsupported=True,
+            check_id=str(check_id or ""),
             mac="",
         )
         values["execution_digest"] = self._execution_digest(values)
@@ -1213,7 +1224,7 @@ class ExecutionBoundary:
                       sampling_window_s: float = 0.0, sampling_samples: int = 0,
                       candidate_digest="", consumed_digest="",
                       dependency_digest="", root_image=None, root_image_error=None,
-                      descendants=None) -> ExecutionProof:
+                      descendants=None, check_id: str = "") -> ExecutionProof:
         """Build the proof for an already-contained launch (runner integration)."""
         try:
             return self._build_proof(
@@ -1227,6 +1238,7 @@ class ExecutionBoundary:
                 root_image_override=root_image,
                 root_image_error=root_image_error,
                 descendants_override=descendants,
+                check_id=check_id,
             )
         except Exception as exc:  # noqa: BLE001
             return self._empty_state(
@@ -1241,7 +1253,7 @@ class ExecutionBoundary:
 
     def run(self, argv: Sequence[str], *, timeout=None, cancelled=None,
             cwd=None, log_dir=None, tool_id=None, candidate_digest="",
-            consumed_digest="", dependency_digest="") -> tuple:
+            consumed_digest="", dependency_digest="", check_id: str = "") -> tuple:
         """Launch *argv* through the boundary and return ``(result, proof)``.
 
         ``argv`` must EXACTLY match the signed tool-spec allowlist (A2); an
@@ -1255,6 +1267,7 @@ class ExecutionBoundary:
             candidate_digest=candidate_digest,
             consumed_digest=consumed_digest,
             dependency_digest=dependency_digest,
+            check_id=str(check_id or ""),
         )
         started_utc = _utc_now()
         started = time.monotonic()

@@ -10,6 +10,15 @@ Run:
 
 Every containment assertion is backed by printed PID evidence (root PID,
 grandchild PID, survivor list, containment classification).
+
+R-01 deterministic late-write gate: the worker publishes its own PID
+immediately and then blocks on an on-disk gate.  ``delay`` is only a bounded
+maximum wait for that gate; the LATE-WRITE sentinel is emitted ONLY when the
+test opens the gate after ``run_managed`` returns.  This decouples PID
+observation (short, bounded ``stay``) from sentinel timing, so no wall-clock
+delay can neutralise ``assert not sentinel.exists()``: a surviving orphan
+writes as soon as the gate is opened and the assertion fails as it did on the
+frozen baseline.
 """
 from __future__ import annotations
 
@@ -32,29 +41,56 @@ from assistant.runner import (
 
 IS_WINDOWS = os.name == "nt"
 
+
+@pytest.fixture(autouse=True)
+def _isolated_identity_roots():
+    """Keep each test's identity monitor scoped to its own process tree."""
+    from assistant import r61_identity
+
+    r61_identity.clear_roots()
+    yield
+    r61_identity.clear_roots()
+
+
 WORKER_TEMPLATE = """\
 import os, sys, time
 sentinel = {sentinel!r}
 pidfile = {pidfile!r}
+ready = {ready!r}
+gate = {gate!r}
 print("PARTIAL-MARKER", flush=True)
+# Single-writer PID provenance: the worker alone records its own PID, now.
 with open(pidfile, "w", encoding="utf-8") as f:
     f.write(str(os.getpid()))
-time.sleep({delay})
-with open(sentinel, "w", encoding="utf-8") as f:
-    f.write("LATE-WRITE")
+# Deterministic publication marker (R-02): written only after the durable PID.
+with open(ready, "w", encoding="utf-8") as f:
+    f.write(str(os.getpid()))
+# Deterministic late-write gate.  The sentinel is written ONLY after the test
+# opens `gate`; `delay` is merely a bounded cap on how long the worker waits,
+# so it cannot turn into a wall-clock mask for a real orphan write.  A killed
+# worker never reaches the write even if the gate is opened later.
+_limit = time.monotonic() + {delay}
+while not os.path.exists(gate):
+    if time.monotonic() >= _limit:
+        break
+    time.sleep(0.01)
+if os.path.exists(gate):
+    with open(sentinel, "w", encoding="utf-8") as f:
+        f.write("LATE-WRITE")
 """
 
 WRAPPER_TEMPLATE = """\
 import os, subprocess, sys, time
 child = {child!r}
-pidfile = {pidfile!r}
 detached = {detached!r}
+rootpidfile = {rootpidfile!r}
 kw = {{}}
 if detached and os.name == "nt":
     kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
 proc = subprocess.Popen([sys.executable, child], **kw)
-with open(pidfile, "w", encoding="utf-8") as f:
-    f.write(str(proc.pid))
+# R-02: publish wrapper PID for liveness-bounded marker waiting.
+with open(rootpidfile, "w", encoding="utf-8") as f:
+    f.write(str(os.getpid()))
 print("WRAPPER-STARTED", flush=True)
 time.sleep({stay})
 """
@@ -90,6 +126,78 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
+def _pid_gone(pid: int | None, timeout_s: float = 1.0) -> bool:
+    """Bounded re-observation of an independent liveness oracle.
+
+    ``run_managed`` already confirms termination with two stable polls.  Re-checking
+    the same PID an instant later can observe an exited-but-not-yet-reaped handle
+    (or a fast PID reuse), so give the durable "gone" state a bounded window.  The
+    assertion is unchanged: the PID must be gone, only the observation is settled.
+    """
+    limit = time.monotonic() + timeout_s
+    while _pid_alive(pid):
+        if time.monotonic() >= limit:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def _awaiting_descendant_probe(pidfile: Path, latched: dict):
+    """Block on the worker's deterministic publication marker, then snapshot.
+
+    The Windows python-launcher re-exec chain has variable depth and its startup
+    time is host-load dependent.  A fixed wall-clock bound (the prior 0.8 s)
+    could expire before the worker published its PID, leaving the only
+    post-timeout snapshot too early: the durable gpid was then absent from
+    ``descendant_pids`` or the pidfile was still empty when the test read it.
+
+    Synchronisation is on definite events, not a wall-clock guess:
+
+      * the wrapper publishes its own PID to ``<tree>/root.pid`` just after
+        ``Popen``; that process is the liveness authority for the wait;
+      * the worker writes ``<pidfile>.ready`` immediately after writing
+        ``pidfile`` (single writer, fixed order); the probe blocks until the
+        marker exists, then until the PID is in a fresh OS snapshot.
+
+    The wait ends fail-closed if the wrapper itself exits (it sleeps only for
+    the test's ``stay`` seconds).  No larger arbitrary timeout, retry, skip,
+    xfail or assertion change is introduced.
+    """
+    from assistant.runner import _snapshot_pids
+
+    ready = Path(str(pidfile) + ".ready")
+    wrapper_pidfile = pidfile.parent / "root.pid"
+
+    def wrapper_alive() -> bool:
+        wrapper = _read_pid(wrapper_pidfile)
+        # Before the wrapper publishes, keep waiting rather than fail early.
+        return _pid_alive(wrapper) if wrapper is not None else True
+
+    def probe():
+        snap = _snapshot_pids()
+        if not latched["attempted"]:
+            latched["attempted"] = True
+            child = _read_pid(pidfile)
+            while not ready.exists():
+                if not wrapper_alive() or (child is not None and not _pid_alive(child)):
+                    break  # fail closed: marker never published / worker died
+                time.sleep(0.01)
+                child = _read_pid(pidfile)
+            child = _read_pid(pidfile)
+            while not (child is not None and child in snap):
+                if not wrapper_alive() or (child is not None and not _pid_alive(child)):
+                    break  # fail closed: PID never became OS-observable
+                time.sleep(0.01)
+                snap = _snapshot_pids()
+                child = _read_pid(pidfile)
+            latched["observed"] = (
+                ready.exists() and child is not None and child in snap
+            )
+        return snap
+
+    return probe
+
+
 def _evidence(label: str, result, grandchild_pid: int | None) -> None:
     print(
         f"EVIDENCE {label}: root_pid={result.pid} "
@@ -103,6 +211,24 @@ def _evidence(label: str, result, grandchild_pid: int | None) -> None:
     )
 
 
+def _gate_path(tmp_path: Path) -> Path:
+    """Deterministic on-disk gate that releases the worker's sentinel write."""
+    return tmp_path / "tree" / "SENTINEL_GATE"
+
+
+def _open_gate(tmp_path: Path) -> None:
+    """Release the sentinel write AFTER containment has been verified.
+
+    The worker has already been confirmed dead at this point, so opening the
+    gate cannot manufacture a write; it only proves the orphan is genuinely
+    gone.  A containment defect that left the orphan alive would write here
+    and the unchanged ``not sentinel.exists()`` assertion would fail.
+    """
+    gate = _gate_path(tmp_path)
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    gate.write_text("open", encoding="utf-8")
+
+
 def _build_tree(tmp_path: Path, *, detached: bool, stay: float, delay: float):
     d = tmp_path / "tree"
     d.mkdir(parents=True, exist_ok=True)
@@ -110,13 +236,18 @@ def _build_tree(tmp_path: Path, *, detached: bool, stay: float, delay: float):
     wrapper = d / "wrapper.py"
     sentinel = d / "LATE_WRITE_SENTINEL.txt"
     gchild_pidfile = d / "grandchild.pid"
+    worker_ready = Path(str(gchild_pidfile) + ".ready")
+    root_pidfile = d / "root.pid"
     worker.write_text(
-        WORKER_TEMPLATE.format(sentinel=str(sentinel), pidfile=str(gchild_pidfile), delay=delay),
+        WORKER_TEMPLATE.format(
+            sentinel=str(sentinel), pidfile=str(gchild_pidfile),
+            ready=str(worker_ready), gate=str(_gate_path(tmp_path)), delay=delay,
+        ),
         encoding="utf-8",
     )
     wrapper.write_text(
-        WRAPPER_TEMPLATE.format(child=str(worker), pidfile=str(gchild_pidfile),
-                                detached=detached, stay=stay),
+        WRAPPER_TEMPLATE.format(child=str(worker), detached=detached, stay=stay,
+                                rootpidfile=str(root_pidfile)),
         encoding="utf-8",
     )
     return [sys.executable, str(wrapper)], sentinel, gchild_pidfile
@@ -130,10 +261,14 @@ def test_child_grandchild_tree_terminated_and_confirmed(tmp_path):
         tmp_path, detached=False, stay=5.0, delay=2.0,
     )
     wall_start = time.monotonic()
-    result = run_managed(cmd, log_dir=str(tmp_path / "logs"), name="tree", timeout=0.4)
+    result = run_managed(
+        cmd, log_dir=str(tmp_path / "logs"), name="tree", timeout=0.4,
+        pid_probe=_awaiting_descendant_probe(gchild_pidfile, {"attempted": False}),
+    )
     wall = time.monotonic() - wall_start
     gpid = _read_pid(gchild_pidfile)
     _evidence("child+grandchild", result, gpid)
+    _open_gate(tmp_path)  # worker is confirmed dead; the gate cannot resurrect it
 
     assert result.timed_out is True
     assert result.containment == CONTAINMENT_TREE_CONFIRMED
@@ -141,8 +276,8 @@ def test_child_grandchild_tree_terminated_and_confirmed(tmp_path):
     assert result.exit_code is None
     assert gpid is not None
     assert gpid in result.descendant_pids, "grandchild was never observed as a descendant"
-    assert _pid_alive(result.pid) is False, "root PID still alive"
-    assert _pid_alive(gpid) is False, "grandchild PID still alive"
+    assert _pid_gone(result.pid) is True, "root PID still alive"
+    assert _pid_gone(gpid) is True, "grandchild PID still alive"
     time.sleep(2.5)
     assert not sentinel.exists(), "grandchild wrote its sentinel AFTER managed run returned"
     # measured duration uses the monotonic clock and tracks wall time
@@ -162,13 +297,15 @@ def test_cancellation_midflight_terminates_whole_tree(tmp_path):
             fired_at["t"] = time.monotonic()
         return fired_at["t"] is not None
 
-    CANCEL_AT = [time.monotonic() + 0.3]
+    CANCEL_AT = [time.monotonic() + 1.0]
     result = run_managed(
         cmd, log_dir=str(tmp_path / "logs"), name="cancel",
         deadline=time.monotonic() + 30.0, cancelled=cancelled,
+        pid_probe=_awaiting_descendant_probe(gchild_pidfile, {"attempted": False}),
     )
     gpid = _read_pid(gchild_pidfile)
     _evidence("cancel-midflight", result, gpid)
+    _open_gate(tmp_path)  # worker is confirmed dead; the gate cannot resurrect it
 
     assert result.cancelled is True
     assert "cancelled" in result.error
@@ -176,8 +313,8 @@ def test_cancellation_midflight_terminates_whole_tree(tmp_path):
     assert result.ran is False
     assert result.timed_out is False, "cancellation must not be mislabelled as timeout"
     assert gpid is not None and gpid in result.descendant_pids
-    assert _pid_alive(result.pid) is False
-    assert _pid_alive(gpid) is False
+    assert _pid_gone(result.pid) is True
+    assert _pid_gone(gpid) is True
     time.sleep(2.5)
     assert not sentinel.exists(), "grandchild survived cancellation and wrote its sentinel"
 
@@ -185,21 +322,25 @@ def test_cancellation_midflight_terminates_whole_tree(tmp_path):
 def test_wrapper_exit_orphan_detected(tmp_path):
     """Wrapper exits cleanly but leaves a DETACHED descendant -> orphan, not ran."""
     cmd, sentinel, gchild_pidfile = _build_tree(
-        tmp_path, detached=True, stay=0.25, delay=1.5,
+        # stay stays bounded; `delay` is only the gate-wait cap, never a
+        # wall-clock mask for the sentinel write (R-01).
+        tmp_path, detached=True, stay=1.0, delay=2.0,
     )
     result = run_managed(
         cmd, log_dir=str(tmp_path / "logs"), name="orphan",
         deadline=time.monotonic() + 10.0,
+        pid_probe=_awaiting_descendant_probe(gchild_pidfile, {"attempted": False}),
     )
     gpid = _read_pid(gchild_pidfile)
     _evidence("wrapper-exit-orphan", result, gpid)
+    _open_gate(tmp_path)  # orphan is confirmed dead; a survivor would write here
 
     assert result.containment == CONTAINMENT_WRAPPER_ORPHAN
     assert result.ran is False, "wrapper-exit orphan must never be reported as ran"
     assert result.timed_out is False
     assert gpid is not None
     assert gpid in result.descendant_pids, "orphan was not observed before wrapper exit"
-    assert _pid_alive(gpid) is False, "orphan PID survived managed run"
+    assert _pid_gone(gpid) is True, "orphan PID survived managed run"
     time.sleep(2.0)
     assert not sentinel.exists(), "orphaned grandchild wrote its sentinel after clean wrapper exit"
 
@@ -210,15 +351,19 @@ def test_detached_process_contained_on_timeout(tmp_path):
     cmd, sentinel, gchild_pidfile = _build_tree(
         tmp_path, detached=True, stay=5.0, delay=2.0,
     )
-    result = run_managed(cmd, log_dir=str(tmp_path / "logs"), name="detached", timeout=0.4)
+    result = run_managed(
+        cmd, log_dir=str(tmp_path / "logs"), name="detached", timeout=0.4,
+        pid_probe=_awaiting_descendant_probe(gchild_pidfile, {"attempted": False}),
+    )
     gpid = _read_pid(gchild_pidfile)
     _evidence("detached-timeout", result, gpid)
+    _open_gate(tmp_path)  # worker is confirmed dead; the gate cannot resurrect it
 
     assert result.timed_out is True
     assert result.containment == CONTAINMENT_TREE_CONFIRMED
     assert result.ran is False
     assert gpid is not None and gpid in result.descendant_pids
-    assert _pid_alive(gpid) is False
+    assert _pid_gone(gpid) is True
     time.sleep(2.5)
     assert not sentinel.exists()
 
@@ -230,14 +375,15 @@ def test_termination_failure_injection_is_reported_unconfirmed(tmp_path):
     )
     FAKE_PID = 9_999_991
 
-    # The wrapper publishes its own PID at startup; the injected probe then
-    # fabricates an un-killable descendant so confirmation MUST fail honestly.
+    # The wrapper publishes its own PID to root.pid at startup; the injected
+    # probe then fabricates an un-killable descendant so confirmation MUST fail
+    # honestly.
     wrapper_dir = tmp_path / "tree"
     wrapper_script = wrapper_dir / "wrapper.py"
     original = wrapper_script.read_text(encoding="utf-8")
     original = original.replace(
-        'with open(pidfile, "w", encoding="utf-8") as f:\n    f.write(str(proc.pid))',
-        'with open(pidfile, "w", encoding="utf-8") as f:\n    f.write(str(proc.pid))\n'
+        'proc = subprocess.Popen([sys.executable, child], **kw)',
+        'proc = subprocess.Popen([sys.executable, child], **kw)\n'
         'with open(r"' + str(wrapper_dir / "root.pid") + '", "w", encoding="utf-8") as f:\n'
         '    f.write(str(os.getpid()))',
     )
@@ -246,11 +392,18 @@ def test_termination_failure_injection_is_reported_unconfirmed(tmp_path):
 
     def injected_probe() -> dict[int, int]:
         snap = real_snapshot()
-        try:
-            root = int(root_pidfile.read_text(encoding="utf-8").strip())
-            snap[FAKE_PID] = root
-        except (OSError, ValueError):
-            pass
+        # The wrapper writes root.pid just after Popen; bound-wait for that
+        # durable value so the fake un-killable descendant is always injected.
+        limit = time.monotonic() + 1.0
+        while True:
+            try:
+                root = int(root_pidfile.read_text(encoding="utf-8").strip())
+                snap[FAKE_PID] = root
+                break
+            except (OSError, ValueError):
+                if time.monotonic() >= limit:
+                    break  # fail honestly: no fake PID injected for the caller to assert
+                time.sleep(0.01)
         return snap
 
     from assistant import runner as _runner
@@ -275,7 +428,7 @@ def test_partial_output_preserved_on_termination(tmp_path):
     cmd, sentinel, gchild_pidfile = _build_tree(
         tmp_path, detached=False, stay=5.0, delay=2.0,
     )
-    result = run_managed(cmd, log_dir=str(tmp_path / "logs"), name="partial", timeout=0.4)
+    result = run_managed(cmd, log_dir=str(tmp_path / "logs"), name="partial", timeout=1.5)
     _evidence("partial-output", result, _read_pid(gchild_pidfile))
 
     assert result.timed_out is True

@@ -30,12 +30,20 @@ def _utc() -> str:
 
 def trusted_proof_for(command, *, trust=None, nonce=None, state="TRUSTED",
                       candidate_digest="", consumed_digest="",
-                      dependency_digest="", tool_id="python_print_ok"):
-    """Return a MAC-valid proof dict bound to *command* and the trust context."""
+                      dependency_digest="", tool_id="python_print_ok",
+                      check_id="eco_sta"):
+    """Return a MAC-valid proof dict bound to *command* and the trust context.
+
+    R7.1 fixture change: the proof now carries a MAC-bound ``check_id`` (default
+    ``eco_sta``, matching the historical helper evidence). Tests that need a
+    proof for a different check pass ``check_id=...`` explicitly. Assertions are
+    unchanged.
+    """
     trust = trust or get_trust()
     values = dict(
         nonce=str(nonce or secrets.token_hex(16)),
         tool_id=str(tool_id),
+        check_id=str(check_id or ""),
         image_realpath="",
         image_sha256="",
         approved_images=(),

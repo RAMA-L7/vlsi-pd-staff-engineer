@@ -1,0 +1,10 @@
+=== Phase 14 independent LVS netlist comparison ===
+layout netlist : D:\audit\security_reopening_sprint_20261125\AGENT_F_COPY\regression\tests\lvs_synthetic\lay_top_mismatch.cir
+   subcircuits: 2
+schematic netlist: D:\audit\security_reopening_sprint_20261125\AGENT_F_COPY\regression\tests\lvs_synthetic\ref.cdl
+   subcircuits: 2
+
+LVS_TOP: UNRESOLVED
+LVS_TOP_SOURCE: unresolved(no-authoritative-hint-and-no-common-root)
+TOP CIRCUIT MISSING (ambiguous-or-unresolved top-cell candidates=[]; source=unresolved(no-authoritative-hint-and-no-common-root))
+LVS_VERDICT: INCONCLUSIVE

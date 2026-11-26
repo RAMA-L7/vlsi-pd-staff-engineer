@@ -29,7 +29,7 @@
 
 ## 1. Objective
 
-Measure and compare the performance of five language models on three fixed, evidence-bound tasks drawn from the frozen, qualified supervised academic PD workflow [S1 §7][S4 §1]. The study produces **descriptive, reproducible measurements** — not a production-readiness or foundry-signoff verdict [S4 §1, §14]. The qualified verdict is READY WITH LIMITATIONS for external evaluation; foundry signoff is BLOCKED, soc_ctrl routed SS timing is FAIL, and other hosts are NOT_TESTED [S4 §14, §16]. These boundaries are inherited by this study and must not be crossed by any claim.
+Measure and compare the performance of five language models on three fixed, evidence-bound tasks drawn from the frozen, qualified supervised academic PD workflow [S1 §7][S4 §1]. The study produces **descriptive, reproducible measurements** — not a production-readiness or foundry-signoff verdict [S4 §1, §14]. The historical 2026-11-18 verdict was READY WITH LIMITATIONS; the final 2026-11-26 external assessment verdict is NOT READY, 2 / 5 — Weak. Foundry signoff is BLOCKED, soc_ctrl routed SS timing is FAIL, and other hosts are NOT_TESTED [S4 §14, §16]. These disclosures, not the older readiness wording, are inherited by this study and must not be crossed by any claim.
 
 ## 2. Hypotheses (pre-registered, descriptive — no significance claim)
 

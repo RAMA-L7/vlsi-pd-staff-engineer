@@ -114,6 +114,99 @@ if ($env:REG_TOOLS) { $Tools = $env:REG_TOOLS }
 if ($env:REG_OSS_CAD) { $Oss = $env:REG_OSS_CAD }
 $YosysWin   = Join-Path $Oss 'bin\yosys.exe'
 
+# --- STA path resolution (BEGIN) ---------------------------------------------
+# Precedence: explicit env override (ASSISTANT_STA, then REG_STA) -> the
+# validated recorded binary -> the historical legacy path.  Recorded /mnt paths
+# are stat'ed through their Windows <drive>:\ spelling so a stale default cannot
+# silently block stage 12.  OpenSTA also needs its CUDD shared library at run
+# time, so the validated lib dir is emitted as LD_LIBRARY_PATH (appendable).
+# Self-contained and injectable so the contract is directly testable without
+# running the whole regression.
+$RegStaValidated = '/mnt/d/tools/opensta/bin/sta'
+$RegStaLegacy    = '/mnt/d/tools/src/OpenSTA/build/sta'
+$RegStaLibDefault = '/mnt/d/tools/opensta/lib'
+
+function Test-RegStaCandidate([string]$Path) {
+  if ($Path -match '^/mnt/([A-Za-z])/(.*)$') {
+    $win = "$($Matches[1].ToUpper()):\$($Matches[2] -replace '/', '\')"
+    return (Test-Path -LiteralPath $win)
+  }
+  # WSL-native paths cannot be stat'ed from Windows; leave them to WSL itself.
+  return $true
+}
+
+function Resolve-RegStaPath {
+  param(
+    [string]$Override = '',
+    [scriptblock]$Exists = $null
+  )
+  $probe = if ($null -eq $Exists) { ${function:Test-RegStaCandidate} } else { $Exists }
+  if (-not [string]::IsNullOrWhiteSpace($Override)) {
+    $p = $Override.Trim()
+    if (-not (& $probe $p)) {
+      Write-Warning "STA path override '$p' is not visible from Windows; using it anyway (it may be WSL-only)."
+    }
+    return [pscustomobject]@{ Path = $p; Source = 'env-override' }
+  }
+  foreach ($c in @(
+      @{ Path = $RegStaValidated; Source = 'validated-recorded' },
+      @{ Path = $RegStaLegacy; Source = 'legacy' })) {
+    if (& $probe $c.Path) {
+      return [pscustomobject]@{ Path = $c.Path; Source = $c.Source }
+    }
+  }
+  throw "OpenSTA executable not found. Looked for '$RegStaValidated' then '$RegStaLegacy'. Set ASSISTANT_STA (or REG_STA) to the WSL path of the sta binary, e.g. ASSISTANT_STA=/mnt/d/tools/opensta/bin/sta"
+}
+
+function Resolve-RegStaLibPath {
+  param(
+    [string]$Override = '',
+    [string]$Base = '',
+    [scriptblock]$Exists = $null
+  )
+  $probe = if ($null -eq $Exists) { ${function:Test-RegStaCandidate} } else { $Exists }
+  $dir = if ([string]::IsNullOrWhiteSpace($Override)) { $RegStaLibDefault } else { $Override.Trim() }
+  if (-not (& $probe $dir)) {
+    Write-Warning "STA library directory '$dir' is not visible from Windows; using it anyway (it may be WSL-only)."
+  }
+  $value = if ([string]::IsNullOrWhiteSpace($Base)) { $dir } else { "$Base`:$dir" }
+  return [pscustomobject]@{ Value = $value; Dir = $dir }
+}
+# --- STA path resolution (END) -----------------------------------------------
+
+$StaOverride = ''
+$StaOverrideVar = ''
+foreach ($staVar in @('ASSISTANT_STA', 'REG_STA')) {
+  $staVal = [Environment]::GetEnvironmentVariable($staVar)
+  if (-not [string]::IsNullOrWhiteSpace($staVal)) {
+    $StaOverride = $staVal.Trim()
+    $StaOverrideVar = $staVar
+    break
+  }
+}
+$StaResolution = Resolve-RegStaPath -Override $StaOverride
+$StaPath = $StaResolution.Path
+if ($StaOverrideVar) {
+  Write-Host "STA path: $StaPath (source: $StaOverrideVar)"
+} else {
+  Write-Host "STA path: $StaPath (source: $($StaResolution.Source))"
+}
+
+$StaLibOverride = ''
+$StaLibOverrideVar = ''
+foreach ($staLibVar in @('ASSISTANT_STA_LIB_DIR', 'REG_STA_LIB_DIR')) {
+  $staLibVal = [Environment]::GetEnvironmentVariable($staLibVar)
+  if (-not [string]::IsNullOrWhiteSpace($staLibVal)) {
+    $StaLibOverride = $staLibVal.Trim()
+    $StaLibOverrideVar = $staLibVar
+    break
+  }
+}
+$StaLibResolution = Resolve-RegStaLibPath -Override $StaLibOverride -Base $env:LD_LIBRARY_PATH
+$StaLibDir = $StaLibResolution.Dir
+$StaLdLibraryPath = $StaLibResolution.Value
+Write-Host "STA LD_LIBRARY_PATH: $StaLdLibraryPath (source: $(if ($StaLibOverrideVar) { $StaLibOverrideVar } else { 'default' }))"
+
 # --------------------------------------------------------------------------- design configuration
 # Maps design names to their RTL/SDC paths and artifact name prefix.
 # Each entry supplies: rtl_rel, sdc_rel, art_prefix.
@@ -195,7 +288,9 @@ $EnvWsl = @{
   REG_PDK         = (ConvertTo-WslPath (Join-Path $Tools 'pdk\skywater-pdk-complete\sky130-pdk-libs-sky130_fd_sc_hd'))
   REG_KLAYOUT     = (ConvertTo-WslPath 'D:\tools\KLayout\bin\klayout.sh')
   REG_OPENROAD    = '/usr/local/bin/openroad'
-  REG_STA         = '/mnt/d/tools/src/OpenSTA/build/sta'
+  REG_STA         = $StaPath
+  # OpenSTA's ELF needs libcudd-3.0.0.so.0 from its build lib dir at run time.
+  LD_LIBRARY_PATH = $StaLdLibraryPath
   REG_LVS_DECK    = (ConvertTo-WslPath (Join-Path $Platform 'lvs\sky130hd.lylvs'))
   REG_DRC_DECK    = (ConvertTo-WslPath (Join-Path $Platform 'drc\sky130hd.lydrc'))
   REG_NETLIST_MAPPED = $MappedNetlistWsl
@@ -492,7 +587,7 @@ foreach ($f in $inputFiles) {
 $toolProbe = [ordered]@{
   yosys        = "cmd /c `"call `"$Oss\environment.bat`" >nul 2>&1 && `"$YosysWin`" -V`""
   openroad    = "wsl -d $WslDistro -- /usr/local/bin/openroad -version"
-  opensta     = "wsl -d $WslDistro -- /mnt/d/tools/src/OpenSTA/build/sta -version"
+  opensta     = "wsl -d $WslDistro -- env LD_LIBRARY_PATH=$StaLdLibraryPath $StaPath -version"
   klayout     = "wsl -d $WslDistro -- /mnt/d/tools/KLayout/bin/klayout.sh -v"
   python      = "& `"$Python`" --version"
   eqy         = "cmd /c `"call `"$Oss\environment.bat`" >nul 2>&1 && `"$Oss\bin\eqy.exe`" --help`""

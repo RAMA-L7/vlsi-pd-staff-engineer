@@ -7,13 +7,16 @@ Python child processes. No EDA tool, network or credential is used.
 from __future__ import annotations
 
 import os
+import queue as queue_module
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
+import assistant.eco as eco_module
 from assistant.controller import GateController
 from assistant.eco import (
     Authorization,
@@ -311,17 +314,70 @@ def test_slow_verifier_deadline_is_enforced_and_rolls_back(env):
     assert sha256_file(ws / "design.v") == before
 
 
-def test_partial_evidence_survives_deadline(env):
+def test_partial_evidence_survives_deadline(env, monkeypatch):
+    """Contract: evidence already yielded before the deadline survives it.
+
+    EXT-02 hardening: the original 0.05 s *wall-clock* budget raced with
+    interpreter/PID startup, so the provider sometimes had not yielded anything
+    before the deadline and the assertion failed for environmental reasons.
+    The clock is now controlled by the test: expiry is triggered by the act of
+    queueing the first evidence item. No assertion is relaxed - the run must
+    still be non-PASS, incomplete, and the streamed evidence must still be
+    durable in the controller. A deliberately missed first ``get`` forces the
+    drain-on-deadline path instead of the ordinary consumer path.
+    """
     ws, ctl, eco, report = env
+
+    class ControlledClock:
+        def __init__(self):
+            self.base = 1000.0
+            self.expired = threading.Event()
+
+        def monotonic(self):
+            return self.base + (10.0 if self.expired.is_set() else 0.0)
+
+        def time(self):  # checkpoint naming; not part of the deadline contract
+            return time.time()
+
+        def sleep(self, seconds):
+            time.sleep(seconds)
+
+    clock = ControlledClock()
+    monkeypatch.setattr(eco_module, "time", clock)
+
+    released = threading.Event()
 
     def streaming():
         yield _ev("eco_lec", Status.PASS, report, reason="SIMULATED LEC before hang")
-        time.sleep(1.0)
+        released.wait(2.0)  # non-cooperative hang after the first evidence item
 
-    result = _run(eco, ws, report, verify=streaming, timeout=0.05)
+    orig_put = queue_module.Queue.put
+    orig_get = queue_module.Queue.get
+    first_get = {"pending": True}
+
+    def evidence_put(self, item, *args, **kwargs):
+        if isinstance(item, tuple) and item and item[0] == "evidence":
+            clock.expired.set()
+        return orig_put(self, item, *args, **kwargs)
+
+    def miss_first_get(self, *args, **kwargs):
+        if first_get["pending"]:
+            first_get["pending"] = False
+            clock.expired.wait(2.0)  # let the worker queue its evidence first
+            raise queue_module.Empty()
+        return orig_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(queue_module.Queue, "put", evidence_put)
+    monkeypatch.setattr(queue_module.Queue, "get", miss_first_get)
+    try:
+        result = _run(eco, ws, report, verify=streaming, timeout=1.0)
+    finally:
+        released.set()
     assert result.status != "PASS"
     assert ctl.latest_evidence("eco_lec") is not None
     assert result.verification.get("incomplete") is True
+    assert result.verification.get("deadline_exceeded") is True
+    assert result.verification.get("partial_evidence_drained") == 1
 
 
 def test_false_short_provider_duration_does_not_defeat_deadline(env):

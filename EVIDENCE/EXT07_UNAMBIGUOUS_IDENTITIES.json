@@ -1,0 +1,178 @@
+{
+  "archive": {
+    "manifest_entries": 195,
+    "zip_members": 195
+  },
+  "disposition": {
+    "corrected_label_for_baseline": "starting_working_tree_baseline",
+    "corrected_label_for_shipped_source": "archive_source_content_tree",
+    "field_equals_shipped_archive_source": false,
+    "field_equals_starting_baseline": true,
+    "field_is_unqualified": true,
+    "frozen_source_tree_field": "67dff40684d1da6f83402a3a300193fa14a33a6025cd6394810d35f51cb76c8b",
+    "note": "Frozen BUNDLE_META.json is NOT modified. This record supplies the missing semantic labels for a future corrected bundle; both digests are valid but denote different identities."
+  },
+  "frozen_bundle_meta_observed": {
+    "files": 195,
+    "source_tree": "67dff40684d1da6f83402a3a300193fa14a33a6025cd6394810d35f51cb76c8b",
+    "utc": "2026-11-25T14:10:54Z",
+    "zip_sha256": "e8ecb9190e7237694419d430e1e799cd6dbf99683f3cde3d4ae21dfb36cd0cef"
+  },
+  "identities": {
+    "archive_manifest_file": {
+      "derived_from": "D:\\audit\\release_candidate_20261125\\EVIDENCE_BUNDLE\\SHA256_MANIFEST.txt",
+      "label": "archive_manifest_file",
+      "scope": "manifest document bytes",
+      "semantics": "SHA-256 of the manifest document file itself. Identifies the manifest bytes, not the source tree it enumerates.",
+      "value": "8f8eaacb46f3e209af20ec16580368529bf7b125da64a47aefaa90f811cdd39a"
+    },
+    "archive_source_content_tree": {
+      "derived_from": "D:\\audit\\release_candidate_20261125\\EVIDENCE_BUNDLE\\rc_evidence_bundle.zip",
+      "exclusion_set": [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "evidence",
+        "regression",
+        "workspace"
+      ],
+      "files": 179,
+      "label": "archive_source_content_tree",
+      "scope": "SOURCE/ members of rc_evidence_bundle.zip",
+      "semantics": "Content-tree digest computed from the bytes of SOURCE/ members inside a zip archive. This is the only digest that answers 'what source does this bundle ship?'.",
+      "value": "7842979a44a0cb432eeacdd9e6e63b5a790fdba9c51346259040842a3277d0c8"
+    },
+    "archive_zip_file": {
+      "derived_from": "D:\\audit\\release_candidate_20261125\\EVIDENCE_BUNDLE\\rc_evidence_bundle.zip",
+      "label": "archive_zip_file",
+      "scope": "container bytes",
+      "semantics": "SHA-256 of the archive file itself. Identifies the container bytes, not the tree of its contents.",
+      "value": "e8ecb9190e7237694419d430e1e799cd6dbf99683f3cde3d4ae21dfb36cd0cef"
+    },
+    "production_git_head_commit": {
+      "derived_from": "D:\\audit\\m1g_mapping_20261117",
+      "label": "git_head_commit_object",
+      "scope": "git HEAD of production",
+      "semantics": "Git commit object id of HEAD (40 hex). Git object-model identity; not a file-content tree digest.",
+      "value": "d8f2117e0e09df03e633ff2789faa699e09e748d"
+    },
+    "production_git_head_tree": {
+      "derived_from": "D:\\audit\\m1g_mapping_20261117",
+      "label": "git_head_tree_object",
+      "scope": "git HEAD of production",
+      "semantics": "Git tree object id of HEAD (40 hex). Enumerates git-tracked objects only; excludes dirty working-tree changes and ignores exclusion sets.",
+      "value": "e9beaa22f2ecb272d21b756cd628ea2d46345c7e"
+    },
+    "rc_working_tree_full_incl_regression": {
+      "derived_from": "D:\\audit\\release_candidate_20261125\\WORKING_COPY",
+      "exclusion_set": [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "evidence",
+        "workspace"
+      ],
+      "files": 235,
+      "label": "working_tree_full_incl_regression",
+      "scope": "RC WORKING_COPY at audit time",
+      "semantics": "Content-tree digest of a working copy using EX_START_BASELINE (regression/ retained). A different scope from the standardized tree.",
+      "value": "cc70203ac66ca866deda4cef1ab2b5501a79318b7717572c8975b1a3870a2269"
+    },
+    "rc_working_tree_standardized": {
+      "derived_from": "D:\\audit\\release_candidate_20261125\\WORKING_COPY",
+      "exclusion_set": [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "evidence",
+        "regression",
+        "workspace"
+      ],
+      "files": 179,
+      "label": "working_tree_standardized",
+      "scope": "RC WORKING_COPY at audit time",
+      "semantics": "Content-tree digest of a working copy using EX_STANDARDIZED (regression/ excluded). This is the identity the RC/Sprint 'SOURCE/' bundle trees use.",
+      "value": "7842979a44a0cb432eeacdd9e6e63b5a790fdba9c51346259040842a3277d0c8"
+    },
+    "repository_git_head_commit": {
+      "derived_from": "D:\\audit\\repo",
+      "label": "git_head_commit_object",
+      "scope": "git HEAD of repository",
+      "semantics": "Git commit object id of HEAD (40 hex). Git object-model identity; not a file-content tree digest.",
+      "value": "41728cd8343b726b0c717df104f3ce26ade18249"
+    },
+    "repository_git_head_tree": {
+      "derived_from": "D:\\audit\\repo",
+      "label": "git_head_tree_object",
+      "scope": "git HEAD of repository",
+      "semantics": "Git tree object id of HEAD (40 hex). Enumerates git-tracked objects only; excludes dirty working-tree changes and ignores exclusion sets.",
+      "value": "6a64806e9973eac92d46f67ae85af3d969d01220"
+    },
+    "sprint_working_tree_full_incl_regression": {
+      "derived_from": "D:\\audit\\rc_closure_sprint_20261125\\WORKING_COPY",
+      "exclusion_set": [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "evidence",
+        "workspace"
+      ],
+      "files": 236,
+      "label": "working_tree_full_incl_regression",
+      "scope": "Sprint WORKING_COPY",
+      "semantics": "Content-tree digest of a working copy using EX_START_BASELINE (regression/ retained). A different scope from the standardized tree.",
+      "value": "f8584b4823d952b7837761c3497e002e2577858b8ba52b9c4438448451c4c90c"
+    },
+    "sprint_working_tree_standardized": {
+      "derived_from": "D:\\audit\\rc_closure_sprint_20261125\\WORKING_COPY",
+      "exclusion_set": [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "evidence",
+        "regression",
+        "workspace"
+      ],
+      "files": 180,
+      "label": "working_tree_standardized",
+      "scope": "Sprint WORKING_COPY",
+      "semantics": "Content-tree digest of a working copy using EX_STANDARDIZED (regression/ excluded). This is the identity the RC/Sprint 'SOURCE/' bundle trees use.",
+      "value": "2cb2a5a88e52914b62f0d64561b21de2b15940a1bfa276e9494227ced7f80b37"
+    },
+    "starting_working_tree_baseline": {
+      "derived_from": "D:\\audit\\release_candidate_20261125\\GOVERNANCE\\STARTING_SHA256.txt",
+      "exclusion_set": [
+        ".git",
+        ".pytest_cache",
+        "__pycache__",
+        "evidence",
+        "workspace"
+      ],
+      "files": 231,
+      "label": "starting_working_tree_baseline",
+      "scope": "pre-remediation RC working copy (baseline)",
+      "semantics": "Content-tree digest of the pre-remediation RC working copy recorded by rc_setup.py; baseline for the remediation diff. It is NOT the identity of any shipped archive content.",
+      "value": "67dff40684d1da6f83402a3a300193fa14a33a6025cd6394810d35f51cb76c8b"
+    }
+  },
+  "identity_algorithm": "sha256(json.dumps({posix_relpath: sha256(file_bytes)}, sort_keys=True).encode('utf-8'))",
+  "read_only_inputs": [
+    "D:\\audit\\release_candidate_20261125\\EVIDENCE_BUNDLE",
+    "D:\\audit\\release_candidate_20261125",
+    "D:\\audit\\rc_closure_sprint_20261125",
+    "D:\\audit\\m1g_mapping_20261117",
+    "D:\\audit\\repo"
+  ],
+  "schema": "ext07.unambiguous-identity/1.0",
+  "semantics_registry": {
+    "archive_manifest_file": "SHA-256 of the manifest document file itself. Identifies the manifest bytes, not the source tree it enumerates.",
+    "archive_source_content_tree": "Content-tree digest computed from the bytes of SOURCE/ members inside a zip archive. This is the only digest that answers 'what source does this bundle ship?'.",
+    "archive_zip_file": "SHA-256 of the archive file itself. Identifies the container bytes, not the tree of its contents.",
+    "git_head_commit_object": "Git commit object id of HEAD (40 hex). Git object-model identity; not a file-content tree digest.",
+    "git_head_tree_object": "Git tree object id of HEAD (40 hex). Enumerates git-tracked objects only; excludes dirty working-tree changes and ignores exclusion sets.",
+    "starting_working_tree_baseline": "Content-tree digest of the pre-remediation RC working copy recorded by rc_setup.py; baseline for the remediation diff. It is NOT the identity of any shipped archive content.",
+    "working_tree_full_incl_regression": "Content-tree digest of a working copy using EX_START_BASELINE (regression/ retained). A different scope from the standardized tree.",
+    "working_tree_standardized": "Content-tree digest of a working copy using EX_STANDARDIZED (regression/ excluded). This is the identity the RC/Sprint 'SOURCE/' bundle trees use."
+  },
+  "utc": "2026-11-25T16:30:10Z"
+}

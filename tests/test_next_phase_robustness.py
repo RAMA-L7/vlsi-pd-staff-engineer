@@ -90,7 +90,7 @@ def _record(
     _cmd = ["simulated_ws5_provider", "--check", check]
     try:
         import r62_proof_helper as _ph
-        _proof, _cmd = _ph.proof_and_command()
+        _proof, _cmd = _ph.proof_and_command(check_id=check)
     except Exception:
         _proof = None
     return ctl.record_check_result(

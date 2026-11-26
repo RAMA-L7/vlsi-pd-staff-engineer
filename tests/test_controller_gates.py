@@ -394,7 +394,7 @@ def test_upstream_gate_must_pass_first(ctl):
     # R6.3: attach a real proof and set the evidence command to the bound argv.
     try:
         import r62_proof_helper as _ph
-        _d, _cmd = _ph.proof_and_command()
+        _d, _cmd = _ph.proof_and_command(check_id='sta')
         if _d is not None:
             genuine.execution_proof = _d
             object.__setattr__(genuine, "command", list(_cmd))

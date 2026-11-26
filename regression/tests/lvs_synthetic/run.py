@@ -38,7 +38,7 @@ def main():
         p = subprocess.run([PY, CMP, lay, ref, out_txt], capture_output=True, text=True)
         txt = open(out_txt, 'r', errors='replace').read() if os.path.exists(out_txt) else (p.stdout + p.stderr)
         r = {"case": name, "rc": p.returncode}
-        for k in ["PIN_NAMES_MATCH", "PIN_ORDER_MATCH", "PIN_COUNT_MATCH", "TOPOLOGY_EQUIVALENT", "LVS_TOPOLOGY_EQUIVALENT", "UNMATCHED_DEVICES", "UNMATCHED_NETS", "UNMATCHED_SUBCIRCUITS"]:
+        for k in ["PIN_NAMES_MATCH", "PIN_ORDER_MATCH", "PIN_COUNT_MATCH", "PIN_CORRESPONDENCE_OK", "LVS_VERDICT", "TOPOLOGY_EQUIVALENT", "LVS_TOPOLOGY_EQUIVALENT", "UNMATCHED_DEVICES", "UNMATCHED_NETS", "UNMATCHED_SUBCIRCUITS"]:
             for line in txt.splitlines():
                 if line.startswith(k + ":"):
                     r[k] = line.split(":", 1)[1].strip()
@@ -50,21 +50,23 @@ def main():
             if v != exp:
                 ok = False
             notes.append(f"TOPOLOGY_EQUIVALENT={r.get('TOPOLOGY_EQUIVALENT')}")
-        elif kind == "expect_pin_names":
-            v = (r.get("PIN_NAMES_MATCH") == "True")
+        elif kind in ("expect_pin_names", "expect_pin_order", "expect_pin_count"):
+            # EXT-06 negative controls: pin mismatches must be reported AND
+            # must fail closed (non-zero rc, LVS_VERDICT: FAIL).  Previously
+            # these cases only asserted the informational booleans while the
+            # comparator still returned rc=0 / PASS.
+            key = {"expect_pin_names": "PIN_NAMES_MATCH",
+                   "expect_pin_order": "PIN_ORDER_MATCH",
+                   "expect_pin_count": "PIN_COUNT_MATCH"}[kind]
+            v = (r.get(key) == "True")
             if v != exp:
                 ok = False
-            notes.append(f"PIN_NAMES_MATCH={r.get('PIN_NAMES_MATCH')}")
-        elif kind == "expect_pin_order":
-            v = (r.get("PIN_ORDER_MATCH") == "True")
-            if v != exp:
+            notes.append(f"{key}={r.get(key)}")
+            fail_closed = (r.get("rc") not in (0, None) and r.get("LVS_VERDICT") == "FAIL"
+                           and r.get("PIN_CORRESPONDENCE_OK") == "False")
+            notes.append(f"fail_closed={'YES' if fail_closed else 'NO'}(rc={r.get('rc')},verdict={r.get('LVS_VERDICT')})")
+            if not fail_closed:
                 ok = False
-            notes.append(f"PIN_ORDER_MATCH={r.get('PIN_ORDER_MATCH')}")
-        elif kind == "expect_pin_count":
-            v = (r.get("PIN_COUNT_MATCH") == "True")
-            if v != exp:
-                ok = False
-            notes.append(f"PIN_COUNT_MATCH={r.get('PIN_COUNT_MATCH')}")
         elif kind == "expect_top_missing":
             if r["top_missing"] != exp:
                 ok = False

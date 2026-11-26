@@ -166,17 +166,107 @@ def _proof_nonce_claims(envelopes, evidence_ids) -> tuple[dict, bool]:
     return claims, True
 
 
-def authoritative_qualification(controller, evidence_ids: Iterable[str]) -> bool:
+def _authoritative_check_bindings(
+    controller, envelopes, eids, state=None
+) -> dict | None:
+    """R7.1: derive ``check_id -> evidence_id`` from MAC-bound envelopes only.
+
+    Returns ``None`` (fail closed) when:
+      * an envelope has no MAC-bound check_id;
+      * the same envelope/evidence_id is presented for two different checks;
+      * two envelopes claim the same check (duplicate authorization);
+      * the evidence record's own check_id disagrees with the envelope;
+      * the evidence_id is absent from, or stale within, that check's index;
+      * that check's index has any structural integrity problem.
+    The returned mapping is added to the signed authorization record so that
+    ``state_machine.check_7`` can re-verify it under the external trust root.
+    """
+    bindings: dict[str, str] = {}
+    seen_eids: set[str] = set()
+    # A1: bind authorization to the FRESH state supplied by the caller, never
+    # to a controller snapshot that may predate a concurrent commit.
+    st = state if state is not None else (getattr(controller, "_state", {}) or {})
+    index = st.get("check_index") or {}
+    evidence = st.get("evidence") or {}
+    for eid, env in zip(eids, envelopes):
+        eid = str(eid)
+        cid = env.get("check_id")
+        if not isinstance(cid, str) or not cid.strip():
+            return None
+        if eid in seen_eids:
+            return None  # same envelope reused for (at least) two checks
+        seen_eids.add(eid)
+        if cid in bindings:
+            return None  # duplicate evidence for one authorized check
+        # `env` comes from EvidenceEnvelope.from_dict(), so its check_id is the
+        # MAC-verified value, never a caller-supplied ledger field.
+        if not isinstance(cid, str) or cid != env.get("check_id"):
+            return None
+        record = evidence.get(eid)
+        if not isinstance(record, Mapping) or str(record.get("check_id", "")) != cid:
+            return None
+        idx = index.get(cid)
+        if not isinstance(idx, (list, tuple)) or eid not in [str(i) for i in idx]:
+            return None  # missing / stale index reference
+        problems = getattr(controller, "_check_index_evidence_problems_for", None)
+        if callable(problems) and problems(st, cid):
+            return None
+        bindings[cid] = eid
+    return bindings or None
+
+
+def authoritative_qualification(
+    controller, evidence_ids: Iterable[str], *, check_bindings: Mapping | None = None
+) -> bool:
     """R6.3 authoritative qualification (the ONLY gate authority).
 
-    In addition to the R6 checks, this now enforces the proof-to-evidence
-    binding via ``state_machine.check_7`` and atomically consumes each proof's
-    nonce in a durable, external-key-bound ledger so cross-run replay and
-    concurrent reuse fail closed.
+    Enforces the proof-to-evidence binding via ``state_machine.check_7`` and
+    consumes each proof's nonce in a durable, external-key-bound ledger. R7.1:
+    the gate passes its authoritative ``check_id -> evidence_id`` mapping so an
+    envelope may only authorize the check the gate actually required. The whole
+    decision+consume runs in a cross-process critical section (adjudicated P1
+    nonce TOCTOU).
     """
     try:
+        from .controller import ledger_critical_section
+
+        with ledger_critical_section(controller.state_path):
+            # A1: a stand-alone authority call MUST re-read durable state while
+            # holding the state lock. When called inside evaluate_gate's
+            # transaction the controller state is already that fresh snapshot.
+            depth = getattr(controller, "_txn_depth", 0)
+            current = getattr(controller, "durable_state_is_current", None)
+            if depth or (callable(current) and current()):
+                # Inside a transaction (or with an unchanged durable snapshot)
+                # the controller state IS the fresh, MAC-bound state. Deliberate
+                # in-memory edits by the caller remain authoritative.
+                st = getattr(controller, "_state", {})
+            else:
+                # A newer durable snapshot exists: authorization MUST be
+                # re-derived from it, never from the stale cache.
+                st = controller._load_state_fresh()
+            return _authoritative_qualification_locked(
+                controller, evidence_ids, check_bindings_arg=check_bindings,
+                state=st,
+            )
+    except Exception:  # noqa: BLE001 - fail closed
+        return False
+
+
+def _authoritative_qualification_locked(
+    controller, evidence_ids: Iterable[str], *,
+    check_bindings_arg: Mapping | None = None,
+    state=None,
+) -> bool:
+    try:
         trust = get_trust()
-        if controller.verify_ledger_integrity():
+        st = state if state is not None else (getattr(controller, "_state", {}) or {})
+        verifier = getattr(controller, "_verify_ledger_integrity_for", None)
+        if callable(verifier):
+            problems = verifier(st)
+        else:  # pragma: no cover - defensive for foreign controllers
+            problems = controller.verify_ledger_integrity()
+        if problems:
             return False
         eids = list(evidence_ids)
         if not eids:
@@ -188,7 +278,7 @@ def authoritative_qualification(controller, evidence_ids: Iterable[str]) -> bool
         from .state_machine import derive_authorization
         from .provenance import EvidenceEnvelope
         envelopes = []
-        stored = getattr(controller, "_state", {}).get("r6_evidence_envelopes") or {}
+        stored = st.get("r6_evidence_envelopes") or {}
         for eid in eids:
             d = stored.get(eid)
             if not isinstance(d, Mapping):
@@ -196,6 +286,24 @@ def authoritative_qualification(controller, evidence_ids: Iterable[str]) -> bool
             envelopes.append(EvidenceEnvelope.from_dict(d, trust).to_dict())
         if not envelopes:
             return False
+        # R7.1: bind each authorizing envelope to the check it may authorize.
+        # Reuse of the same envelope for two checks, stale index references and
+        # cross-check evidence all fail closed before any authorization record
+        # is minted.
+        check_bindings = _authoritative_check_bindings(
+            controller, envelopes, eids, state=st
+        )
+        if check_bindings is None:
+            return False
+        if check_bindings_arg is not None:
+            if not isinstance(check_bindings_arg, Mapping) or not check_bindings_arg:
+                return False
+            explicit = {str(c): str(e) for c, e in check_bindings_arg.items()}
+            # The gate's required check set and the MAC-bound envelopes must
+            # agree exactly: no extra envelope, no envelope for the wrong check.
+            if explicit != check_bindings:
+                return False
+            check_bindings = explicit
         ctx = trust.context
         context = {
             "session_id": ctx.session_id, "repo_id": ctx.repo_id,
@@ -209,6 +317,8 @@ def authoritative_qualification(controller, evidence_ids: Iterable[str]) -> bool
             "deadline_utc": _FUTURE_DEADLINE,
             "context": context,
             "evidence": envelopes,
+            # R7.1: MAC-bound check_id -> evidence_id authorization mapping.
+            "check_bindings": check_bindings,
             # R6.3: record-side authoritative digest values for check_7/8/9.
             "candidate_digest": material["candidate"],
             "consumed_sha256": material["consumed"],

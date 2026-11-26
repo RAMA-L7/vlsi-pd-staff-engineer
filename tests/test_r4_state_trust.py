@@ -10,7 +10,9 @@ Establishes the authoritative trust boundary for gate authorization:
 The ``test_exploit_*`` tests below MUST fail on the vulnerable baseline
 (``controller.py`` before this remediation) and pass after the fix.  The
 ``test_guard_*`` tests must pass on both; they protect legitimate tool PASS,
-valid waivers and validated NOT_APPLICABLE flows from an over-broad fix.
+validated NOT_APPLICABLE and the reporting form of waivers from an over-broad
+fix.  EXT-05 refines the waiver guard: WAIVED_PASS stays visible but is non-
+authorizing (qualified=False), so that assertion was tightened.
 
 Threat model (honest): the attacker can write ``state.json``.  The integrity
 binding is a lightweight HMAC whose key is stored in the same file, so a
@@ -57,7 +59,7 @@ def _genuine_pass(tmp_path: Path, check_id: str) -> Evidence:
     )
     try:
         import r62_proof_helper as _ph
-        _d, _cmd = _ph.proof_and_command()
+        _d, _cmd = _ph.proof_and_command(check_id=check_id)
         if _d is not None:
             _gv.execution_proof = _d
             object.__setattr__(_gv, "command", list(_cmd))
@@ -298,7 +300,8 @@ def test_guard_waiver_and_na_still_authorize(tmp_path):
     gd = ctl.evaluate_gate("DOWN", ["sta_down"], upstream_gates=["UP"])
     assert gd.qualified is True
 
-    # Valid waiver on a failing (but waivable) check still authorizes.
+    # EXT-05: a valid waiver on a waivable FAIL keeps the reporting PASS but is
+    # non-authorizing (qualified=False); validated N-A above still authorizes.
     c2 = GateController(str(tmp_path / "state2.json"))
     c2.record_evidence(
         Evidence.from_run(
@@ -314,6 +317,7 @@ def test_guard_waiver_and_na_still_authorize(tmp_path):
     ))
     c2.record_evidence(_genuine_pass(tmp_path, "up_proof2"))
     up2 = c2.evaluate_gate("UP", ["antenna", "up_proof2"])
-    assert up2.disposition == "WAIVED_PASS" and up2.qualified is True
+    assert up2.disposition == "WAIVED_PASS" and up2.passed
+    assert up2.qualified is False  # EXT-05: waived FAIL carries no authorization
     gd2 = c2.evaluate_gate("DOWN", ["sta_down"], upstream_gates=["UP"])
-    assert gd2.qualified is True
+    assert gd2.qualified is False

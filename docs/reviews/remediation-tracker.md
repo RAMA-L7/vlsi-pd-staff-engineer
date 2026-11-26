@@ -158,3 +158,36 @@ All nine P1 findings from Independent Audit Round 3 remediated and lead-verified
 
 Full suite and cross-workstream matrix results in `D:\audit\third_remediation_round4_20261120\`.
 No commit/push/publication. No readiness declaration.
+
+## Round-RC — release-candidate remediation (2026-11-25)
+
+Recorded UTC 2026-11-25T14:00Z. Full report:
+`docs/reviews/release-candidate-remediation.md`. Starting identity:
+reviewed commit `fa2bc75` (228 content files, tree
+`265d90310e354a9162b5455c35f75b61e301ab79eab41d46896a240f672df615`); main
+checkout `d8f2117` + 38 dirty preserved; RC starting tree
+`67dff40684d1da6f83402a3a300193fa14a33a6025cd6394810d35f51cb76c8b`
+(identical to R7.2). RC fix changed only `assistant/controller.py`
+(`7f9c9201…` → `31467a7c…`) and `assistant/eco.py` (`2922debd…` → `7ac183fc…`)
+— an immediate cancellation latch observed by `_AcceptanceGuard` at the
+PASS-persistence boundary. No commit/push/publication; no readiness or rating
+claim by this tracker.
+
+| ID | Finding (short) | Severity | Prior disposition | Round-RC disposition | Evidence |
+|---|---|---|---|---|---|
+| A7-P0-01 | Unauthenticated `check_index` lets one check's proof authorize another required check (cross-check reuse, clean integrity) | P0 | Found in Independent Audit Round 7; fixed in R7.1; R7.2 halted on C4, then P0-A | FIXED AND VERIFIED (closed in RC) | `D:\audit\release_candidate_20261125\EVIDENCE\A7P0_BEFORE_AFTER.json`: reviewed `fa2bc75` `qualified=true`, `decision=CLEAN_PASS`, `downstream_ok=true`, `ledger_problems=[]`, `reproduced=true`; RC `qualified=false`, `decision=BLOCKED`, `downstream_ok=false`, 3 integrity problems, `reproduced=false`; per-case `state.json` in `A7P0_*\p0_*\` |
+| C4 | Concurrent benign write erases blocking FAIL → stale PASS qualifies | P0-class | Reproduced in R7.1; fixed and verified in R7.2 | FIXED AND VERIFIED | R7.2 `PHASE0\BASELINE_C4_C3.json` (before `after_qualified=true`, 3/3) vs `PHASE0\R71_HARNESS_RESULTS.json` (`after_qualified=false`, `BLOCKED`, verdict PASS); R7.2 `FINAL_REPORT.md` (13 reps denied) |
+| C3 | Two gates qualify from one proof nonce via stale save | P1 | Reproduced in R7.1; fixed and verified in R7.2 | FIXED AND VERIFIED | R7.2 `R71_HARNESS_RESULTS.json`: `qualified_winners=1`, single durable owner, second child `q=false`; pre-fix `qualified_winners=2` |
+| D4 | ECO acceptance uses stale controller evidence view after concurrent FAIL | P1 | Found by R7.2 Agent 4; fixed and verified in R7.2 | FIXED AND VERIFIED | R7.2 `FINAL_REPORT.md`: `accepted=false`, `controller_latest == durable_latest`, clean `EcoMissingEvidenceError` |
+| Nonce TOCTOU (A7-P1-01) | Cross-process double-claim of one proof nonce | P1 | Adjudicated genuine in R7.1 (`exploitable=true`); fixed and verified in R7.2 | FIXED AND VERIFIED | R7.2 `FINAL_REPORT.md` (C3/nonce/writers 13 reps denied); `REPORTS\AGENT4_NONCE_RECON.md` (post-fix `winners=1`, fresh reclaim denied) |
+| P0-A cancel-at-persistence regression | Concurrent `cancel()` at ECO PASS-persistence barrier leaves durable PASS | P0-class | Reproduced in R7.2 and halted (3/20; Agent 3 4/20) | FIXED AND VERIFIED in RC | `EVIDENCE\CANCEL_STRESS_AFTER.txt`: `total=30`, `fails=0`, `detail=[]`; pre-fix `D:\audit\third_remediation_round7_2_20261124\LEAD_VERIFICATION\CANCEL_STRESS.json`: `total=20`, `fails=3`; reproduction commands and code delta in `release-candidate-remediation.md` §(b)–(c) |
+
+Open validation items (not finding dispositions): full pytest suite PENDING at
+report time; simulated-tool integration NOT_TESTED on RC; real EDA baseline
+INCOMPLETE (`stages_recorded=0`); reconstruction/bundle/final manifest PENDING;
+inherited 6 failures / 5 skipped not re-adjudicated; preflight optional checks
+`rtl_yosys_elaboration=NOT_TESTED`, `sdc_exists`, `pdk_root_exists` FAIL.
+Release decision recommendation recorded in the full report: **READY FOR
+EXTERNAL RC EVALUATION** (not a signoff; numerical rating left to the external
+reviewer).
+

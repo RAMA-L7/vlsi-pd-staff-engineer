@@ -49,7 +49,7 @@ README.md was rewritten as the publication-facing entry point:
 - Framework architecture/agent workflow: documented with `assistant/`, `regression/` layers.
 - Validation results: pytest 324 passed; framework 47/0/0; preflight PASS 22/22 hashes;
   real baseline PASS 16/16 with byte-identical netlists `3148c5c3…` / `7120e545…`.
-- Independent verdict: **READY WITH LIMITATIONS** prominently stated with report link.
+- Historical 2026-11-18 verdict recorded as **READY WITH LIMITATIONS**; the 2026-11-26 external assessment verdict is **NOT READY, 2 / 5 — Weak** (`docs/EXTERNAL_ASSESSMENT_STATUS.md`).
 - Known limitations: foundry signoff BLOCKED; soc_ctrl routed SS timing FAIL/BLOCKED
   (best routed `maj3_2` WNS −0.852429 ns, TNS −0.920336 ns, 2 violators); other hosts
   NOT_TESTED; macro example NOT_APPLICABLE; IR/EM/antenna/UPF/post-fill UNSUPPORTED.

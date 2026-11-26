@@ -90,7 +90,7 @@ def record_sta_pass(tmp_path, state, report):
     """Record a fully-provenanced PASS so gate-evaluate can reach PASS."""
     import r63_cli_proof_helper as _ph
     pf = str(tmp_path / "proof.json")
-    _ph.write_proof_file(pf)
+    _ph.write_proof_file(pf, check_id='sta')
     return run_cli(
         "gate-record", "--state", state, "--check", "sta", "--status", "PASS",
         "--reason", "meets target", "--command", "sta -exit", "--exit-code", "0",
@@ -452,7 +452,7 @@ def test_cli_na_valid_fact_records_not_applicable_disposition(tmp_path, monkeypa
     # the N/A disposition assertions below are unchanged.
     import r63_cli_proof_helper as _ph
     pf = str(tmp_path / "proof.json")
-    _ph.write_proof_file(pf)
+    _ph.write_proof_file(pf, check_id='na_proof')
     rpt = tmp_path / "na_proof.rpt"
     rpt.write_text("WNS: 0.5", encoding="utf-8")
     rec2 = run_cli("gate-record", "--state", state, "--check", "na_proof",

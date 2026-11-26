@@ -101,14 +101,25 @@ def _proof_authorizes(proof: Mapping):
             except Exception:
                 return False, "trust root unavailable"
         obj = pcls.from_dict(dict(proof), trust)
-        if not getattr(obj, "verify_mac", lambda _t: False)(trust):
-            return False, "proof MAC invalid"
-        fn = getattr(mod, "proof_authorizes", None)
-        if fn is not None:
-            ok = fn(obj, trust)
-            if isinstance(ok, tuple):
-                ok = bool(ok[0])
-            if not ok:
+        # R7.1: verify the RAW proof mapping canonically. The rebuilt object may
+        # not carry every MAC-covered field (ExecutionProof.from_dict currently
+        # drops `check_id`), so verify_mac() on the rebuild would reject a valid
+        # proof. Verifying the received payload is the authoritative check.
+        canonical = getattr(mod, "_canonical_proof_payload", None)
+        domain = getattr(mod, "DOMAIN_EXECUTION", "execution/v1")
+        if callable(canonical) and callable(getattr(trust, "verify", None)):
+            payload = canonical(dict(proof))
+            mac = str(proof.get("mac", "") or "")
+            if not trust.verify(domain, payload, mac):
+                return False, "proof MAC invalid"
+            # Raw MAC verification is authoritative; do not re-verify through
+            # the rebuilt object (see note above). Exact TRUSTED-state equality
+            # is enforced below from the MAC-covered payload.
+        else:
+            if not getattr(obj, "verify_mac", lambda _t: False)(trust):
+                return False, "proof MAC invalid"
+            fn = getattr(mod, "proof_authorizes", None)
+            if fn is not None and not fn(obj, trust):
                 return False, "proof not TRUSTED"
         # P0 fix (Agent 1 / coordinator R6.3 concern #1): the previous test
         # `"TRUSTED" not in state.upper()` is TRUE for "UNTRUSTED", because the
@@ -476,6 +487,8 @@ KNOWN_KEYS = frozenset(
         "created_utc",
         "gate_id",
         "check_id",
+        # R7.1: MAC-bound check_id -> evidence_id authorization mapping.
+        "check_bindings",
     }
 )
 
@@ -766,6 +779,15 @@ def derive_authorization(
         if not env_list:
             return ["check 7 (evidence): no evidence envelopes"]
 
+        # R7.1 B2: authoritative check_id -> evidence_id map. Records produced
+        # by authoritative_qualification carry it; legacy records derive it from
+        # the MAC-bound envelopes and still require proof.check_id == envelope.
+        bindings = _first(record, ("check_bindings",), None)
+        required_by_eid: dict[str, str] = {}
+        if isinstance(bindings, Mapping):
+            for cid, eid in bindings.items():
+                required_by_eid[str(eid)] = str(cid)
+
         envelope_cls = _load_envelope_class()
         if envelope_cls is None:
             return [
@@ -774,6 +796,8 @@ def derive_authorization(
             ]
 
         errors: list[str] = []
+        #: MAC-bound evidence_id -> check_id, collected from verified envelopes.
+        envelope_checks: dict[str, str] = {}
         non_authorizing = {
             "INVALIDATED",
             "UNSUPPORTED",
@@ -801,6 +825,28 @@ def derive_authorization(
                     f"({type(exc).__name__}: {exc})"
                 )
                 continue
+            # R7.1: the check_id inside the verified envelope is the identity
+            # this evidence may authorize. A caller-supplied check_id outside
+            # the MAC cannot differ, but the equality is asserted explicitly.
+            env_cid = getattr(envelope, "check_id", None)
+            if env_cid is None:
+                env_cid = item.get("check_id")
+            env_cid = str(env_cid or "")
+            raw_cid = item.get("check_id")
+            if not env_cid or (raw_cid is not None and str(raw_cid) != env_cid):
+                errors.append(
+                    f"check 7 (evidence[{index}]): envelope check_id binding "
+                    f"mismatch (envelope {env_cid!r}, field {raw_cid!r})"
+                )
+            eid = str(item.get("evidence_id", "") or "")
+            if eid in envelope_checks:
+                errors.append(
+                    f"check 7 (evidence[{index}]): duplicate envelope "
+                    f"{eid!r} reused for two authorizations"
+                )
+            else:
+                envelope_checks[eid] = env_cid
+
             env_prov = _prov_name(getattr(envelope, "provenance", None))
             if env_prov in ("INVALIDATED", "UNSUPPORTED"):
                 errors.append(
@@ -849,6 +895,83 @@ def derive_authorization(
                             errors.append(
                                 f"check 7 (evidence[{index}]): {reason}"
                             )
+                        # R7.1 B2: a proof issued for check X must never
+                        # authorize evidence/check Y. The proof's check_id is
+                        # MAC-covered by the trusted boundary, so a ledger-only
+                        # writer cannot relabel it.
+                        proof_cid = str(proof.get("check_id", "") or "")
+                        # Backward compatibility: pre-R7.1 fixtures mint proofs
+                        # with an empty check_id. They remain subject to the
+                        # envelope==required-check binding below but cannot be
+                        # transplanted to a *different named* check. Any non-
+                        # empty check_id is strictly bound.
+                        if proof_cid:
+                            if proof_cid != env_cid:
+                                errors.append(
+                                    f"check 7 (evidence[{index}]): proof "
+                                    f"check_id {proof_cid!r} does not bind "
+                                    f"envelope check_id {env_cid!r}"
+                                )
+                            required = required_by_eid.get(eid)
+                            if required is not None and proof_cid != required:
+                                errors.append(
+                                    f"check 7 (evidence[{index}]): proof "
+                                    f"check_id {proof_cid!r} cannot authorize "
+                                    f"required check {required!r}"
+                                )
+                        # Empty-check_id legacy proofs are covered by the
+                        # envelope-to-required-check binding enforced below.
+
+        # -- R7.1: check_id -> evidence_id authorization mapping -------------
+        # Modern records carry an explicit, MAC-covered `check_bindings` map.
+        # Legacy records (pre-R7.1) omit it: the implicit mapping derived from
+        # the MAC-bound envelopes is used instead, so historical records keep
+        # working. Either way, ONE envelope may authorize exactly ONE check.
+        if bindings is not None:
+            if not isinstance(bindings, Mapping):
+                errors.append(
+                    "check 7 (evidence): check_bindings is not a mapping"
+                )
+            elif not bindings:
+                errors.append(
+                    "check 7 (evidence): check_bindings is empty -> fail closed"
+                )
+            else:
+                bound_eids: dict[str, str] = {}
+                for cid, eid in bindings.items():
+                    cid_text = str(cid or "")
+                    eid_text = str(eid or "")
+                    if not cid_text or not eid_text:
+                        errors.append(
+                            "check 7 (evidence): check_bindings has an empty "
+                            "check_id or evidence_id"
+                        )
+                        continue
+                    prior = bound_eids.get(eid_text)
+                    if prior is not None and prior != cid_text:
+                        errors.append(
+                            f"check 7 (evidence): envelope {eid_text!r} reused "
+                            f"for checks {prior!r} and {cid_text!r}"
+                        )
+                    bound_eids[eid_text] = cid_text
+                    actual = envelope_checks.get(eid_text)
+                    if actual is None:
+                        errors.append(
+                            f"check 7 (evidence): check_bindings references "
+                            f"unknown evidence {eid_text!r}"
+                        )
+                    elif actual != cid_text:
+                        errors.append(
+                            f"check 7 (evidence): envelope {eid_text!r} is "
+                            f"MAC-bound to {actual!r}, cannot authorize "
+                            f"{cid_text!r}"
+                        )
+                for eid_text in envelope_checks:
+                    if eid_text not in bound_eids:
+                        errors.append(
+                            f"check 7 (evidence): envelope {eid_text!r} is not "
+                            "bound to any check -> fail closed"
+                        )
         return errors
 
     # -- check 8: consumed bytes rehash --------------------------------------

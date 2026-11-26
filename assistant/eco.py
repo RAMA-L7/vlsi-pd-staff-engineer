@@ -43,6 +43,8 @@ import shutil
 import stat
 import threading
 import time
+
+from assistant.controller import ledger_critical_section
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -159,6 +161,20 @@ class _AcceptanceGuard:
         self._lock = threading.Lock()
         self.invalidation_reason: str | None = None
         self.invalidation_kind: str | None = None  # "deadline" | "cancellation" | "mutation"
+
+    def arm_deadline(self, deadline: float | None) -> None:
+        """Arm the single authoritative deadline at the start of verification.
+
+        Pre-verification setup (dependency hashing, checkpoint, design-fact
+        registration, candidate snapshot) is not verification work and must not
+        consume the verification budget.  Arming is one-shot: a guard that has
+        already been invalidated cannot have its deadline moved or cleared.
+        """
+        with self._lock:
+            if self.invalidation_reason is not None:
+                return
+            if self.deadline is None:
+                self.deadline = deadline
 
     def expired(self) -> bool:
         return self.deadline is not None and time.monotonic() >= self.deadline
@@ -564,6 +580,56 @@ def managed_tool_verification(
             ctx.check()
 
     return verify
+
+
+def _acceptance_authorization(
+    controller: GateController,
+    *,
+    evidence_ids: Sequence[str],
+    check_bindings: Mapping[str, str],
+    simulated: bool,
+) -> tuple[str, str]:
+    """The ONE ECO acceptance authorization decision (EXT-03).
+
+    Every :meth:`EcoManager.run_experiment` route -- managed tools, explicitly
+    labelled simulation, verification-free ``no_op``, with or without a
+    downstream callback -- calls this once, after evidence revalidation and
+    before any durable acceptance. The PRODUCTION qualification class is
+    returned ONLY by the gate authority
+    (:func:`assistant.r6_authority.authoritative_qualification`, the sole
+    production caller of ``state_machine.derive_authorization``). Everything
+    else is explicitly non-authorizing. No caller-supplied flag or locally
+    minted ``ExperimentResult`` can assert PRODUCTION here.
+    """
+    if simulated:
+        # A labelled simulation deliberately does not request gate authority;
+        # it must never carry a PRODUCTION claim. All of its evidence was
+        # already checked as simulated by _collect_verification /
+        # _pre_acceptance_revalidation.
+        return (
+            "SIMULATED",
+            "explicitly labelled simulation; production authority not requested",
+        )
+    if not evidence_ids or not check_bindings:
+        # Includes the verification-free ``no_op`` route: the gate authority
+        # itself refuses an empty evidence set (no TRUSTED proof to bind).
+        return (
+            "UNQUALIFIED",
+            "authoritative acceptance refused: no authorizing tool evidence",
+        )
+    from .r6_authority import authoritative_qualification
+
+    if not authoritative_qualification(
+        controller, list(evidence_ids), check_bindings=check_bindings
+    ):
+        return (
+            "UNQUALIFIED",
+            "authoritative acceptance refused by the gate authority",
+        )
+    return (
+        "PRODUCTION",
+        "authoritative acceptance granted by the gate authority",
+    )
 
 
 # TR-01: a standard-cell design CAN have placed/routed geometry. Physical DRC
@@ -1569,33 +1635,34 @@ class EcoManager:
                 os.fsync(f.fileno())
             os.replace(tmp, self.experiment_log)
 
-        invalidated, reason, kind, deadline_exceeded, cancelled = _guard_state()
-        _write(invalidated, reason, kind, deadline_exceeded, cancelled)
+        with ledger_critical_section(self.controller.state_path):
+            invalidated, reason, kind, deadline_exceeded, cancelled = _guard_state()
+            _write(invalidated, reason, kind, deadline_exceeded, cancelled)
 
-        # R6.1 P0-A (4): re-check the guard AFTER the atomic write. A cancel
-        # takes no ECO lock and can land between the evaluation above and
-        # ``os.replace``, leaving a durable PASS. RAISE HERE (inside _save_log)
-        # so that _persist_record's 3-retry loop re-evaluates the guard and
-        # rewrites the record as FAIL. A post-commit amendment above this layer
-        # would leave the durable PASS intact and violate the invariant.
-        inv2, reason2, kind2, dlex2, cancelled2 = _guard_state()
-        if inv2 and not invalidated:
-            # Correct the stale PASS immediately (defence in depth), THEN raise
-            # so the retry loop also re-evaluates and rewrites FAIL. Correction
-            # is not *relied upon* — the raise/fail-closed is authoritative.
-            _write(inv2, reason2, kind2, dlex2, cancelled2)
-            detail = str(reason2 or "commit guard invalidation")
-            if kind2 == "cancellation":
-                raise EcoCancellationError(
-                    f"{detail}; cancellation observed after atomic write; "
-                    "refusing durable PASS"
-                )
-            if kind2 == "deadline":
-                raise EcoTimeoutError(
-                    f"{detail}; deadline observed after atomic write; "
-                    "refusing durable PASS"
-                )
-            raise EcoRejected(detail, status="INCONCLUSIVE")
+            # R6.1 P0-A (4): re-check the guard AFTER the atomic write. A cancel
+            # takes no ECO lock and can land between the evaluation above and
+            # ``os.replace``, leaving a durable PASS. RAISE HERE (inside _save_log)
+            # so that _persist_record's 3-retry loop re-evaluates the guard and
+            # rewrites the record as FAIL. A post-commit amendment above this layer
+            # would leave the durable PASS intact and violate the invariant.
+            inv2, reason2, kind2, dlex2, cancelled2 = _guard_state()
+            if inv2 and not invalidated:
+                # Correct the stale PASS immediately (defence in depth), THEN raise
+                # so the retry loop also re-evaluates and rewrites FAIL. Correction
+                # is not *relied upon* — the raise/fail-closed is authoritative.
+                _write(inv2, reason2, kind2, dlex2, cancelled2)
+                detail = str(reason2 or "commit guard invalidation")
+                if kind2 == "cancellation":
+                    raise EcoCancellationError(
+                        f"{detail}; cancellation observed after atomic write; "
+                        "refusing durable PASS"
+                    )
+                if kind2 == "deadline":
+                    raise EcoTimeoutError(
+                        f"{detail}; deadline observed after atomic write; "
+                        "refusing durable PASS"
+                    )
+                raise EcoRejected(detail, status="INCONCLUSIVE")
 
     @staticmethod
     def _record_index(history: list[dict], transaction_token: str) -> int:
@@ -1815,7 +1882,8 @@ class EcoManager:
             guard.check(label)
             return
         # No active transaction (direct/legacy call): stateless enforcement.
-        if self.controller.run_status == "CANCELLED":
+        if (self.controller.run_status == "CANCELLED"
+                or self.controller.durable_cancellation_requested()):
             raise EcoCancellationError(f"run was cancelled {label}")
         if deadline is not None and time.monotonic() >= deadline:
             raise EcoTimeoutError(
@@ -2176,7 +2244,10 @@ class EcoManager:
             "candidate_revision_bound": candidate_revision,
             "dependency_revision_bound": dependency_revision,
         }
-        cancelled = cancellation or (lambda: self.controller.run_status == "CANCELLED")
+        cancelled = cancellation or (
+            lambda: (self.controller.run_status == "CANCELLED"
+                     or self.controller.durable_cancellation_requested())
+        )
 
         if not policy:  # explicit no_op policy
             report["policy"] = "explicitly_inapplicable"
@@ -2243,48 +2314,9 @@ class EcoManager:
         thread.start()
 
         seen: dict[str, list[Evidence]] = defaultdict(list)
-        while True:
-            if cancelled():
-                report["incomplete"] = True
-                report["measured_duration_s"] = ctx.measured_duration_s
-                raise EcoCancellationError(
-                    "run was cancelled during verification",
-                    verification_report=report,
-                    measured_duration_s=ctx.measured_duration_s,
-                )
-            if deadline is not None and time.monotonic() >= deadline:
-                report["incomplete"] = True
-                report["deadline_exceeded"] = True
-                report["measured_duration_s"] = ctx.measured_duration_s
-                raise EcoTimeoutError(
-                    f"verification deadline exceeded after "
-                    f"{ctx.measured_duration_s:.3f}s (limit {limit:.3f}s); "
-                    "partial evidence preserved",
-                    verification_report=report,
-                    measured_duration_s=ctx.measured_duration_s,
-                )
-            try:
-                kind, payload = results.get(timeout=0.02)
-            except queue.Empty:
-                continue
-            if kind == "done":
-                break
-            if kind == "error":
-                report["incomplete"] = True
-                report["measured_duration_s"] = ctx.measured_duration_s
-                if isinstance(payload, EcoRejected):
-                    if isinstance(payload, EcoTimeoutError):
-                        report["deadline_exceeded"] = True
-                    report["measured_duration_s"] = ctx.measured_duration_s
-                    payload.verification_report = report
-                    payload.measured_duration_s = ctx.measured_duration_s
-                    raise payload
-                raise EcoVerificationError(
-                    f"verify() raised {type(payload).__name__}: {payload}",
-                    status="INCONCLUSIVE", verification_report=report,
-                    measured_duration_s=ctx.measured_duration_s,
-                )
-            ev = payload
+
+        def record_streamed(ev: Evidence) -> None:
+            """Validate and durably record one streamed evidence item."""
             if not isinstance(ev, Evidence):
                 raise EcoVerificationError(
                     f"verify() returned a non-Evidence object: {ev!r}",
@@ -2327,6 +2359,81 @@ class EcoManager:
                     status=status, verification_report=report,
                 ) from exc
             evidence_ids.append(recorded.evidence_id)
+
+        def drain_pending() -> int:
+            """Record evidence already queued when a terminal boundary fired.
+
+            EXT-02: the deadline/cancel check runs before ``results.get``. An
+            item yielded by the provider can therefore be stranded in the
+            queue when the clock expires, even though the exception text says
+            "partial evidence preserved". Drain ONLY items already queued: no
+            waiting, no deadline extension, no late-provider evidence. The
+            caller still raises the terminal error immediately afterwards, so
+            drained evidence can never authorize a PASS.
+            """
+            drained = 0
+            while True:
+                try:
+                    kind, payload = results.get_nowait()
+                except queue.Empty:
+                    break
+                if kind != "evidence":
+                    continue
+                try:
+                    record_streamed(payload)
+                except Exception as exc:  # noqa: BLE001 - invalid evidence fails closed
+                    report["partial_evidence_drain_error"] = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    continue
+                drained += 1
+            return drained
+
+        while True:
+            if cancelled():
+                report["incomplete"] = True
+                report["measured_duration_s"] = ctx.measured_duration_s
+                report["partial_evidence_drained"] = drain_pending()
+                raise EcoCancellationError(
+                    "run was cancelled during verification",
+                    verification_report=report,
+                    measured_duration_s=ctx.measured_duration_s,
+                )
+            if deadline is not None and time.monotonic() >= deadline:
+                report["incomplete"] = True
+                report["deadline_exceeded"] = True
+                report["measured_duration_s"] = ctx.measured_duration_s
+                report["partial_evidence_drained"] = drain_pending()
+                raise EcoTimeoutError(
+                    f"verification deadline exceeded after "
+                    f"{ctx.measured_duration_s:.3f}s (limit {limit:.3f}s); "
+                    "partial evidence preserved",
+                    verification_report=report,
+                    measured_duration_s=ctx.measured_duration_s,
+                )
+            try:
+                kind, payload = results.get(timeout=0.02)
+            except queue.Empty:
+                continue
+            if kind == "done":
+                break
+            if kind == "error":
+                report["incomplete"] = True
+                report["measured_duration_s"] = ctx.measured_duration_s
+                report["partial_evidence_drained"] = drain_pending()
+                if isinstance(payload, EcoRejected):
+                    if isinstance(payload, EcoTimeoutError):
+                        report["deadline_exceeded"] = True
+                    report["measured_duration_s"] = ctx.measured_duration_s
+                    payload.verification_report = report
+                    payload.measured_duration_s = ctx.measured_duration_s
+                    raise payload
+                raise EcoVerificationError(
+                    f"verify() raised {type(payload).__name__}: {payload}",
+                    status="INCONCLUSIVE", verification_report=report,
+                    measured_duration_s=ctx.measured_duration_s,
+                )
+            record_streamed(payload)
 
         report["measured_duration_s"] = ctx.measured_duration_s
         if candidate_snapshot is not None:
@@ -2894,14 +3001,19 @@ class EcoManager:
             return self._blocked(experiment_id, description, change_class, str(exc))
         dependency_revision = stable_json_hash(dependency_snapshot)
 
-        # F-03: one authoritative monotonic deadline for the whole transaction.
+        # F-03: one authoritative monotonic deadline for the verification phase
+        # and every acceptance boundary after it.  The LIMIT is validated here,
+        # but the clock is deliberately NOT armed yet: setup below (checkpoint,
+        # design-fact registration, apply_change, candidate snapshot) is not
+        # verification work.  Counting it against a short budget made the run
+        # expire before any provider could produce evidence (EXT-02).
+        verification_limit_s: float | None = None
         overall_deadline: float | None = None
         if verification_timeout_s is not None:
-            limit_s = _as_finite_float(verification_timeout_s, "verification_timeout_s")
-            if limit_s < 0:
+            verification_limit_s = _as_finite_float(verification_timeout_s, "verification_timeout_s")
+            if verification_limit_s < 0:
                 return self._blocked(experiment_id, description, change_class,
                                      "verification_timeout_s must not be negative")
-            overall_deadline = time.monotonic() + limit_s
 
         # R2-01: one authoritative, single-shot guard for the whole
         # transaction. A re-entrant acceptance (e.g. a callback re-entering
@@ -2918,8 +3030,19 @@ class EcoManager:
                 reason or "nested acceptance refused: deadline expired"
             )
         guard = _AcceptanceGuard(
-            deadline=overall_deadline,
-            cancelled=lambda: self.controller.run_status == "CANCELLED",
+            deadline=None,  # armed at the verification boundary, see below
+            # RC P0-A fix: observe the IMMEDIATE cancellation latch as well as
+            # durable run_status, so a cancel() whose durable transaction is
+            # still in flight cannot be missed at the PASS commit boundary.
+            cancelled=lambda: (
+                self.controller.cancellation_requested()
+                or self.controller.run_status == "CANCELLED"
+                # EXT-04: the two operands above are per-instance views. A
+                # cancellation durably committed by ANOTHER process is invisible
+                # to them. The fresh, lock-synchronised durable read is the
+                # authority at every commit-guard decision point.
+                or self.controller.durable_cancellation_requested()
+            ),
             parent=previous_guard,
         )
         # R4: reject a duplicate/re-entrant acceptance for the SAME caller id.
@@ -3008,6 +3131,15 @@ class EcoManager:
             verified_snapshot = self.snapshot_workspace()
             candidate_revision = stable_json_hash(verified_snapshot)
 
+            # EXT-02: arm the single authoritative deadline exactly at the
+            # verification boundary. Everything above is setup, not the
+            # verification/evaluation/commit/downstream phase the deadline is
+            # documented to bound. The guard and the verification collector
+            # now share the same freshly armed instant.
+            if verification_limit_s is not None:
+                overall_deadline = time.monotonic() + verification_limit_s
+                guard.arm_deadline(overall_deadline)
+
             if not policy:  # explicit no_op policy: nothing may change
                 if self._unlisted_changes((), baseline):
                     raise EcoRejected(
@@ -3021,7 +3153,12 @@ class EcoManager:
                     started_utc=started_utc, previous_ids=previous_ids,
                     timeout_s=verification_timeout_s, evidence_ids=evidence_ids,
                     simulated=simulated,
-                    cancellation=lambda: self.controller.run_status == "CANCELLED",
+                    # EXT-04: include the durable, cross-process cancellation
+                    # signal, not just this instance's cached in-memory status.
+                    cancellation=lambda: (
+                        self.controller.run_status == "CANCELLED"
+                        or self.controller.durable_cancellation_requested()
+                    ),
                     candidate_snapshot=verified_snapshot,
                     candidate_revision=candidate_revision,
                     dependency_revision=dependency_revision,
@@ -3084,6 +3221,29 @@ class EcoManager:
                 allow_simulated=bool(simulated.strip()),
             )
             self._check_overall(overall_deadline, "after final revalidation")
+            # EXT-03: the ONE authoritative acceptance decision. Every route
+            # (managed tools, labelled simulation, verification-free no_op,
+            # downstream or no downstream) funnels through it here, on the
+            # revalidated evidence and BEFORE the downstream callback and the
+            # durable PASS. Only the gate authority can grant PRODUCTION;
+            # all other routes get an explicit non-authorizing class.
+            required_bindings = {
+                str(cid): str(entry["evidence_id"])
+                for cid, entry in (verification_report.get("checks") or {}).items()
+                if entry.get("status") == "PASS" and entry.get("evidence_id")
+            }
+            qualification_class, auth_reason = _acceptance_authorization(
+                self.controller,
+                evidence_ids=list(required_bindings.values()),
+                check_bindings=required_bindings,
+                simulated=bool(simulated.strip() or analysis_mode),
+            )
+            verification_report["authorization"] = {
+                "authoritative": qualification_class == "PRODUCTION",
+                "qualification_class": qualification_class,
+                "decision": auth_reason,
+                "required_check_bindings": dict(required_bindings),
+            }
             # R5 worker-drain gate: a surviving verification worker cannot be
             # forcibly terminated in-process. If any registered worker is still
             # alive, FAIL CLOSED instead of accepting while it can still mutate
@@ -3118,9 +3278,7 @@ class EcoManager:
                 change_scope=change_scope.to_dict(),
                 measured_verification_s=revision.measured_duration_s,
                 dependency_revision=dependency_revision,
-                qualification_class=(
-                    "SIMULATED" if (simulated.strip() or analysis_mode) else "PRODUCTION"
-                ),
+                qualification_class=qualification_class,
             )
             # R2-04: materialize the accepted candidate as a verified,
             # read-only snapshot BEFORE persistence and hand it to downstream

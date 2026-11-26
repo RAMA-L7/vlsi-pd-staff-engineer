@@ -231,3 +231,40 @@ def test_synthetic_negative_controls_preserved(tmp_path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert '"fail": 0' in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# EXT-06: top-level pin correspondence is gating, never "informational".
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad_layout", [
+    "lay_pinname.cir", "lay_pinorder.cir", "lay_pincount.cir",
+])
+def test_pin_mismatch_fails_closed(tmp_path, bad_layout):
+    """An unresolved pin mapping must produce FAIL + non-zero rc (EXT-06)."""
+    ref = (SYNTHETIC / "ref.cdl").read_text(encoding="utf-8")
+    bad = (SYNTHETIC / bad_layout).read_text(encoding="utf-8")
+    extracted, reference = _write_run(tmp_path, bad, ref)
+    out = tmp_path / "lvs_compare.txt"
+    proc = _run_comparator(extracted, reference, out, {"REG_DESIGN": "test_counter"})
+    txt = _report(out, proc)
+
+    assert proc.returncode == 1, txt
+    assert "PIN_CORRESPONDENCE: UNRESOLVED" in txt
+    assert "PIN_CORRESPONDENCE_OK: False" in txt
+    assert "LVS_VERDICT: FAIL" in txt
+    assert "LVS_VERDICT: PASS" not in txt
+
+
+def test_equivalent_pins_pass_and_report_resolved(tmp_path):
+    """The positive control still passes and states the mapping is resolved."""
+    netlist = (SYNTHETIC / "lay_ok.cir").read_text(encoding="utf-8")
+    extracted, reference = _write_run(tmp_path, netlist, netlist)
+    out = tmp_path / "lvs_compare.txt"
+    proc = _run_comparator(extracted, reference, out, {"REG_DESIGN": "test_counter"})
+    txt = _report(out, proc)
+
+    assert proc.returncode == 0, txt
+    assert "PIN_CORRESPONDENCE: RESOLVED" in txt
+    assert "PIN_CORRESPONDENCE_OK: True" in txt
+    assert "LVS_VERDICT: PASS" in txt

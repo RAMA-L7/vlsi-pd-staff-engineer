@@ -1110,7 +1110,7 @@ def run_managed(
         if boundary is not None:
             try:
                 early_proof = boundary.denied_proof(
-                    cmd_list, tool_id=name, reason=base_error,
+                    cmd_list, tool_id=name, check_id=name, reason=base_error,
                     state=_et.ExecutionState.UNKNOWN,
                 )
             except Exception:  # noqa: BLE001
@@ -1400,7 +1400,7 @@ def run_managed(
         try:
             if pid is None or spawn_failed or descendant_error:
                 proof = boundary.denied_proof(
-                    cmd_list, tool_id=name,
+                    cmd_list, tool_id=name, check_id=name,
                     reason=descendant_error or error or "spawn_failed",
                     state=_et.ExecutionState.UNKNOWN, exit_code=exit_code,
                 )
@@ -1408,6 +1408,7 @@ def run_managed(
                 proof = boundary.prove_for_run(
                     cmd_list,
                     tool_id=name,
+                    check_id=name,
                     root_pid=pid,
                     guard=job,
                     exit_code=exit_code,
@@ -1422,7 +1423,7 @@ def run_managed(
         except Exception as exc:  # noqa: BLE001
             try:
                 proof = boundary.denied_proof(
-                    cmd_list, tool_id=name,
+                    cmd_list, tool_id=name, check_id=name,
                     reason="proof construction error: %s" % exc,
                     state=_et.ExecutionState.UNKNOWN, exit_code=exit_code,
                 )

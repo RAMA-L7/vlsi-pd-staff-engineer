@@ -13,6 +13,15 @@ Both netlists are flattened to transistor level and compared on:
     which is purely structural and independent of net names)
   * the top-level net fan-out distribution
   * the power connectivity
+  * the top-level PIN CORRESPONDENCE (gating, fail-closed)
+
+Net *names* are intentionally not a gating check: the extractor and the
+reference CDL legitimately use different internal net labels.  Top-level
+*pin correspondence* is different: if every layout pin cannot be mapped
+one-to-one onto a schematic pin, the LVS verdict must be FAIL/INCONCLUSIVE,
+never PASS.  EXT-06: the previous version computed PIN_NAMES_MATCH /
+PIN_ORDER_MATCH / PIN_COUNT_MATCH but excluded them from the verdict, so an
+unresolved 32-vs-15 pin correspondence was reported as PASS.
 
 This is the Phase 12/13 validated algorithm; the paths are parameters here so
 the same code runs against any regression run.
@@ -28,6 +37,8 @@ Machine-readable keys (consumed by checks/acceptance.py):
     UNMATCHED_DEVICES: <n>
     UNMATCHED_SUBCIRCUITS: <n>
     POWER: <state>
+    PIN_CORRESPONDENCE_OK: <True|False>   (gating; False -> LVS_VERDICT: FAIL, rc=1)
+    PIN_CORRESPONDENCE_REASON: <why the pin mapping is/is not resolved>
 """
 import json
 import os
@@ -390,6 +401,73 @@ def fanout(circ):
 
 
 # ---------------------------------------------------------------------------
+# EXT-06: top-level pin correspondence is a GATING check.
+#
+# Only two equivalences are accepted, both of which are identity-preserving
+# and unambiguous:
+#   1. rail aliases (VSS / VNB|VSS / VGND -> GLOBAL_GND, etc.), because the
+#      layout extractor and the CDL name the same physical rail differently;
+#   2. SPICE bus escaping (count\[0\] -> count[0]).
+# No synthetic-name aliasing (SYNTH_* <-> count[*]) is attempted: guessing a
+# port mapping from topology is exactly the normalisation that hid EXT-06.
+# An unmapped, duplicated or ambiguous pin is an UNRESOLVED correspondence and
+# must fail closed.
+# ---------------------------------------------------------------------------
+
+def port_identity(name):
+    """Conservative canonical identity of a top-level pin (rail + bus escape)."""
+    n = norm_name(name)
+    c = canon(n)
+    if c in ('GLOBAL_GND', 'GLOBAL_PWR', 'GLOBAL_PB'):
+        return ('RAIL', c)
+    return ('NET', n.replace('\\[', '[').replace('\\]', ']'))
+
+
+def pin_correspondence(layout_circ, schem_circ):
+    """Return a dict describing whether every pin maps one-to-one.
+
+    resolved == True only when:
+      * both sides have the same number of pins;
+      * no canonical key is duplicated on either side (ambiguous mapping);
+      * the canonical key sets are identical;
+      * the canonical key ORDER is identical (positional SPICE contract).
+    """
+    lpins = [norm_name(p) for p in layout_circ['pins']]
+    spins = [norm_name(p) for p in schem_circ['pins']]
+    lkeys = [port_identity(p) for p in lpins]
+    skeys = [port_identity(p) for p in spins]
+    reasons = []
+    if len(lpins) != len(spins):
+        reasons.append('pin count %d != %d' % (len(lpins), len(spins)))
+    for label, keys in (('layout', lkeys), ('schematic', skeys)):
+        dup = [k for k, n in Counter(keys).items() if n > 1]
+        if dup:
+            reasons.append('%s duplicate canonical pin keys: %s' % (label, sorted(dup)))
+    lset, sset = set(lkeys), set(skeys)
+    layout_only = sorted(lset - sset)
+    schem_only = sorted(sset - lset)
+    if layout_only:
+        reasons.append('layout-only pins: %s' % layout_only)
+    if schem_only:
+        reasons.append('schematic-only pins: %s' % schem_only)
+    order_ok = (lkeys == skeys)
+    if not order_ok and not reasons:
+        reasons.append('canonical pin order differs')
+    return {
+        'layout_pins': lpins,
+        'schematic_pins': spins,
+        'layout_keys': lkeys,
+        'schematic_keys': skeys,
+        'in_both': lset & sset,
+        'layout_only': layout_only,
+        'schematic_only': schem_only,
+        'order_ok': order_ok,
+        'resolved': not reasons,
+        'reason': '; '.join(reasons) if reasons else 'bijective canonical pin mapping',
+    }
+
+
+# ---------------------------------------------------------------------------
 # Design-independent top-cell resolution.
 #
 # The historical comparator used a hard-coded top-cell name.  That
@@ -577,13 +655,8 @@ def main(argv=None):
     linc = signature(ldev)
     sinc = signature(sdev)
     def _port_key(name):
-        n = norm_name(name)
-        c = canon(n)
-        # unify rail aliases to canonical rail identity
-        if c in ('GLOBAL_GND','GLOBAL_PWR','GLOBAL_PB'):
-            return ('RAIL', c)
-        # normalize bus/index forms
-        return ('NET', n.replace('\\[','[').replace('\\]',']'))
+        # EXT-06: single shared identity function (rail alias + bus escape).
+        return port_identity(name)
 
     def top_port_anchors_pair(lt_c, st_c, lnets, snets):
         lpins = [norm_name(p) for p in lt_c['pins']]
@@ -699,6 +772,20 @@ def main(argv=None):
     out.append("PIN_COUNT_MATCH: %s" % (len(lp_list) == len(sp_list)))
     out.append("")
 
+    # EXT-06: pin correspondence is NOT informational.  The three raw
+    # booleans above stay for diagnostics, but the verdict below is gated by
+    # an explicit, conservative one-to-one mapping.  Anything unresolved
+    # fails closed instead of being normalised away.
+    pins = pin_correspondence(lt, st)
+    out.append("--- top-level pin correspondence (gating, fail-closed) ---")
+    out.append("PIN_CORRESPONDENCE: %s" % ('RESOLVED' if pins['resolved'] else 'UNRESOLVED'))
+    out.append("PIN_CORRESPONDENCE_REASON: %s" % pins['reason'])
+    out.append("PIN_CANONICAL_KEYS_IN_BOTH: %d" % len(pins['in_both']))
+    out.append("PIN_CANONICAL_LAYOUT_ONLY: %s" % sorted(pins['layout_only']))
+    out.append("PIN_CANONICAL_SCHEMATIC_ONLY: %s" % sorted(pins['schematic_only']))
+    out.append("PIN_CORRESPONDENCE_OK: %s" % pins['resolved'])
+    out.append("")
+
     # --- power connectivity ---------------------------------------------------
     # The layout's power nets must be single connected nets, and the
     # schematic's VPWR / VGND pins must map onto them.
@@ -753,8 +840,13 @@ def main(argv=None):
     topology_ok = (wl_matched == wl_layout_total == wl_schem_total
                    and len(ldev) == len(sdev) > 0 and lc == sc)
     out.append("TOPOLOGY_EQUIVALENT: %s" % topology_ok)
+    # EXT-06: an unresolved top-level pin correspondence is a structural
+    # mismatch, not an "informational" difference.  Gate the verdict on it.
+    pin_ok = pins['resolved']
+    out.append("PIN_CORRESPONDENCE_OK: %s" % pin_ok)
+    out.append("PIN_CORRESPONDENCE_REASON: %s" % pins['reason'])
     all_checks_ok = (topology_ok and unmatched_nets == 0 and unmatched_devices == 0
-                     and unmatched_subckts == 0 and power_ok and bulk_ok)
+                     and unmatched_subckts == 0 and power_ok and bulk_ok and pin_ok)
     out.append("LVS_VERDICT: %s" % ('PASS' if all_checks_ok else 'FAIL'))
 
     text = '\n'.join(out) + '\n'

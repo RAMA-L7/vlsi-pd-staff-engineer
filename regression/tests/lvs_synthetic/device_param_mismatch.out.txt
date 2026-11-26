@@ -1,0 +1,90 @@
+=== Phase 14 independent LVS netlist comparison ===
+layout netlist : D:\audit\security_reopening_sprint_20261125\AGENT_F_COPY\regression\tests\lvs_synthetic\lay_param2.cir
+   subcircuits: 2
+schematic netlist: D:\audit\security_reopening_sprint_20261125\AGENT_F_COPY\regression\tests\lvs_synthetic\ref.cdl
+   subcircuits: 2
+
+LVS_TOP: TEST_COUNTER
+LVS_TOP_SOURCE: netlist-top-cell-detection
+--- top-level standard-cell instances ---
+cell                                         layout    schem status
+INVX1                                             2        3 MISMATCH
+matched cell instances (by type): 0
+UNMATCHED cell instances: [('INVX1', 2, 3)]
+
+--- transistor-level comparison ---
+layout devices: 6   schematic devices: 6
+layout nets (canonicalised): 7   schematic nets: 7
+  NSHORT                       W=4.2e-07      L=1.5e-07    layout=  2 schem=  3 MISMATCH
+  NSHORT                       W=9e-07        L=1.5e-07    layout=  1 schem=  0 MISMATCH
+  PSHORT                       W=8.4e-07      L=1.5e-07    layout=  3 schem=  3 MATCH
+
+--- structural (Weisfeiler-Lehman) connectivity comparison ---
+matching device-colour classes: 0 of 6 layout / 6 schematic
+layout-only classes: 6   schematic-only classes: 6
+
+--- net accounting (structural, name-independent) ---
+layout net-colour classes: 7   schematic net-colour classes: 7
+net-colour classes in both: 0
+layout-only net-colour classes: 7   schematic-only: 7
+STRUCTURALLY UNMATCHED NETS: 14
+
+--- net naming (informational only) ---
+layout top-level nets: 6   schematic top-level nets: 6
+nets in both (by name): 6
+layout-only net names: 0
+schematic-only net names: 0
+
+--- top-level net fan-out distribution ---
+fanout         layout  schematic
+1                   4          2
+2                   0          2
+4                   2          0
+6                   0          2
+
+--- top-level pin comparison ---
+layout pins: 5  schematic pins: 5
+pin names in both: 5
+layout-only pins: []
+schematic-only pins: []
+PIN_NAMES_MATCH: True
+PIN_ORDER_MATCH: True
+PIN_COUNT_MATCH: True
+
+--- top-level pin correspondence (gating, fail-closed) ---
+PIN_CORRESPONDENCE: RESOLVED
+PIN_CORRESPONDENCE_REASON: bijective canonical pin mapping
+PIN_CANONICAL_KEYS_IN_BOTH: 5
+PIN_CANONICAL_LAYOUT_ONLY: []
+PIN_CANONICAL_SCHEMATIC_ONLY: []
+PIN_CORRESPONDENCE_OK: True
+
+--- power connectivity ---
+layout power nets (canonical): ['GLOBAL_GND', 'GLOBAL_PB', 'GLOBAL_PWR']
+schematic power nets (canonical): ['GLOBAL_GND', 'GLOBAL_PB', 'GLOBAL_PWR']
+bulk-net partition identical (shape): False
+layout bulk partition: [1, 1, 1]
+schematic bulk partition: [2]
+
+=== SUMMARY ===
+standard-cell instance multiset identical : False
+transistor device count layout=6 schematic=6
+structural connectivity classes matched   : 0
+LVS_EXECUTION: EXECUTED
+LVS_TOPOLOGY_EQUIVALENT: False
+
+DEVICES: layout=6 schematic=6
+WL_MATCHED: 0
+WL_LAYOUT_TOTAL: 6
+WL_SCHEMATIC_TOTAL: 6
+UNMATCHED_NETS: 14
+UNMATCHED_DEVICES: 2
+UNMATCHED_SUBCIRCUITS: 1
+POWER: VDD=VSS_MISMATCH
+POWER_Canonical_Nets_Match: True
+POWER_Bulk_Partition_Match: False
+MATCHED_CELL_INSTANCES: 0
+TOPOLOGY_EQUIVALENT: False
+PIN_CORRESPONDENCE_OK: True
+PIN_CORRESPONDENCE_REASON: bijective canonical pin mapping
+LVS_VERDICT: FAIL

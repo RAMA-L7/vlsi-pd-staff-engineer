@@ -1036,7 +1036,7 @@ S = '15_lvs'
 lvlog = RUN + '/15_lvs/lvs.log'
 comp = RUN + '/lvs_compare.txt'
 if not executed(S):
-    for n in ('official_deck_used', 'lvs_deck_identity', 'genuine_sky130_cdl_used', 'reference_from_physical_database', 'topcell_configured', 'verdict_match', 'lvs_database_written', 'extracted_netlist_written', 'device_counts_match', 'no_unmatched_devices', 'no_unmatched_nets', 'no_unmatched_subcircuits', 'power_connectivity_correct', 'power_structure_verified', 'independent_structure_match'):
+    for n in ('official_deck_used', 'lvs_deck_identity', 'genuine_sky130_cdl_used', 'reference_from_physical_database', 'topcell_configured', 'verdict_match', 'lvs_database_written', 'extracted_netlist_written', 'device_counts_match', 'no_unmatched_devices', 'no_unmatched_nets', 'no_unmatched_subcircuits', 'power_connectivity_correct', 'power_structure_verified', 'independent_structure_match', 'pin_correspondence_resolved'):
         skip(S, n)
 else:
     check(S, 'official_deck_used', 'sky130hd.lylvs' in os.environ.get('REG_LVS_DECK', 'sky130hd.lylvs'), 'the official unmodified deck (env string)')
@@ -1069,6 +1069,12 @@ else:
     mt = re.search(r'WL_LAYOUT_TOTAL: (\d+)', cm)
     ms = re.search(r'WL_SCHEMATIC_TOTAL: (\d+)', cm)
     check(S, 'independent_structure_match', m is not None and mt is not None and ms is not None and m.group(1) == mt.group(1) == ms.group(1) and int(m.group(1)) > 0, 'Weisfeiler-Lehman device-colour classes matched=%s of %s/%s' % (m.group(1) if m else '?', mt.group(1) if mt else '?', ms.group(1) if ms else '?'))
+    # EXT-06: pin correspondence is a gating LVS check, not an informational
+    # observation.  A 32-vs-15 pin mismatch must fail the acceptance ledger.
+    m = re.search(r'PIN_CORRESPONDENCE_OK: (\S+)', cm)
+    reason = re.search(r'PIN_CORRESPONDENCE_REASON: (.*)', cm)
+    check(S, 'pin_correspondence_resolved', m is not None and m.group(1) == 'True',
+          'pin correspondence=%s (%s)' % (m.group(1) if m else '?', reason.group(1) if reason else '?'))
 
 # ===================================================================== manifest (Phase 33 integration)
 S = 'manifest'

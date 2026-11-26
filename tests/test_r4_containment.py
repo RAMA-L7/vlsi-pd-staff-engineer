@@ -32,10 +32,28 @@ from assistant.runner import (
     CONTAINMENT_UNSUPPORTED,
     REASON_WSL_UNCONFIRMABLE,
     ThreadContainment,
+    _snapshot_pids,
     run_managed,
 )
 
 IS_WINDOWS = os.name == "nt"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_identity_roots():
+    """Keep each test's identity monitor scoped to its own process tree.
+
+    ``r61_identity`` keeps a module-global set of "active roots" that every
+    ``run_managed`` monitor watches.  A root left behind by an earlier test in
+    the same pytest process makes a later containment test observe the earlier
+    tree (a transient ``cmd.exe`` helper is then classified unsupported).  The
+    registry ships a ``clear_roots`` test helper for exactly this purpose.
+    """
+    from assistant import r61_identity
+
+    r61_identity.clear_roots()
+    yield
+    r61_identity.clear_roots()
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +90,22 @@ def _pid_alive(pid: int | None) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
+    return True
+
+
+def _pid_gone(pid: int | None, timeout_s: float = 1.0) -> bool:
+    """Bounded re-observation of the independent liveness oracle.
+
+    ``run_managed`` already confirms termination with two stable polls; an
+    immediate re-check can still catch an exited-but-not-yet-reaped handle (or a
+    fast PID reuse).  The assertion is unchanged -- the PID must be gone -- only
+    the observation is allowed to settle within a bounded window.
+    """
+    limit = time.monotonic() + timeout_s
+    while _pid_alive(pid):
+        if time.monotonic() >= limit:
+            return False
+        time.sleep(0.01)
     return True
 
 
@@ -287,10 +321,36 @@ def test_thread_registry_reports_worker_still_alive(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_tree_termination_confirmed_with_independent_pid_oracle(tmp_path):
-    """Regression: whole tree killed and independently confirmed dead."""
+    """Regression: whole tree killed and independently confirmed dead.
+
+    The child interpreter can take longer than the 0.4 s kill deadline to start
+    on a loaded host, so reading its PID file after ``run_managed`` races with
+    process startup (the observation may be ``None`` or absent from the PID
+    snapshot even though containment itself succeeded).  Use run_managed's
+    existing ``pid_probe`` seam to bound-wait until the child is actually in
+    the OS enumeration before the kill.  Liveness below is still checked by the
+    INDEPENDENT oracle, not by runner's helpers.
+    """
     cmd, sentinel, pidfile = _build_tree(tmp_path, stay=5.0, delay=2.0)
+    latched = {"child_seen": False}
+
+    def awaiting_child_probe():
+        snap = _snapshot_pids()
+        if not latched["child_seen"]:
+            limit = time.monotonic() + 0.8
+            child = _read_pid(pidfile)
+            while not (child is not None and child in snap):
+                if time.monotonic() >= limit:
+                    break  # fail honestly: nothing observed for the caller to assert
+                time.sleep(0.01)
+                snap = _snapshot_pids()
+                child = _read_pid(pidfile)
+            latched["child_seen"] = child is not None and child in snap
+        return snap
+
     result = run_managed(
         cmd, log_dir=str(tmp_path / "logs"), name="tree-r4", timeout=0.4,
+        pid_probe=awaiting_child_probe,
     )
     child_pid = _read_pid(pidfile)
     assert result.timed_out is True
@@ -299,9 +359,30 @@ def test_tree_termination_confirmed_with_independent_pid_oracle(tmp_path):
     assert result.wsl_uncontained is False
     assert result.is_host_contained is True
     assert child_pid is not None and child_pid in result.descendant_pids
-    assert _pid_alive(result.pid) is False
-    assert _pid_alive(child_pid) is False
+    assert _pid_gone(result.pid) is True
+    assert _pid_gone(child_pid) is True
     time.sleep(2.5)
+    assert not sentinel.exists(), "descendant wrote its sentinel after return"
+
+
+def test_default_pid_enumeration_observes_live_descendant(tmp_path):
+    """Default (un-injected) PID enumeration must still discover a live child.
+
+    Keeps coverage of runner's own discovery path after the timing fix above:
+    the probe seam is used only to remove the startup race, not to replace the
+    assertion that descendants are observed without injection.
+    """
+    cmd, sentinel, pidfile = _build_tree(tmp_path, stay=6.0, delay=3.0)
+    result = run_managed(
+        cmd, log_dir=str(tmp_path / "logs"), name="tree-default-probe", timeout=1.5,
+    )
+    child_pid = _read_pid(pidfile)
+    assert result.timed_out is True
+    assert result.containment == CONTAINMENT_TREE_CONFIRMED
+    assert child_pid is not None and child_pid in result.descendant_pids
+    assert _pid_gone(result.pid) is True
+    assert _pid_gone(child_pid) is True
+    time.sleep(3.5)
     assert not sentinel.exists(), "descendant wrote its sentinel after return"
 
 

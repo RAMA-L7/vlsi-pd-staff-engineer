@@ -118,7 +118,7 @@ def _genuine_pass(controller, tmp_path, check="sta", **kw):
     # R6.2: attach a REAL TRUSTED proof so the gate keeps its security purpose.
     try:
         import r62_proof_helper as _ph
-        _d, _cmd = _ph.proof_and_command()
+        _d, _cmd = _ph.proof_and_command(check_id=check)
         if _d is not None:
             _ev.execution_proof = _d
             object.__setattr__(_ev, "command", list(_cmd))
@@ -358,6 +358,9 @@ def test_sf12_disposition_distinguishes_clean_from_waived_pass(ctl, tmp_path):
     waived = ctl.evaluate_gate("g", ["sta", "antenna"])
     assert waived.passed
     assert waived.disposition == "WAIVED_PASS"
+    # EXT-05: the waived FAIL stays non-authorizing even though a genuine PASS
+    # for "sta" is present in the same gate.
+    assert waived.qualified is False
     assert "waived" in waived.reason.lower()
     assert "WAIVED_PASS" in waived.human_summary
     assert ctl.report()["last_gate_disposition"] == "WAIVED_PASS"

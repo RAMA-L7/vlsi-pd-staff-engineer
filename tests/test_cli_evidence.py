@@ -124,7 +124,7 @@ def test_cli_na_valid_reason_succeeds_with_validated_design_fact(tmp_path, monke
     # the N/A disposition assertions below are unchanged.
     import r63_cli_proof_helper as _ph
     pf = str(tmp_path / "proof.json")
-    _ph.write_proof_file(pf)
+    _ph.write_proof_file(pf, check_id='na_proof')
     rpt = tmp_path / "na_proof.rpt"
     rpt.write_text("WNS: 0.5", encoding="utf-8")
     rec2 = run_cli(*record_cmd(
@@ -206,7 +206,7 @@ def test_cli_substantive_record_evaluates_pass_via_cli(tmp_path, monkeypatch):
     state = tmp_path / "state.json"
     import r63_cli_proof_helper as _ph
     pf = str(tmp_path / "proof.json")
-    _ph.write_proof_file(pf)
+    _ph.write_proof_file(pf, check_id='sta')
     rec = run_cli(*record_cmd(
         state, "sta", "PASS",
         "--command", "sta -exit", "--exit-code", "0",

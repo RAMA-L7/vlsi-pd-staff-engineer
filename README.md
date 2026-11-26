@@ -25,13 +25,17 @@ This repository provides a deterministic, scripted RTL-to-GDSII physical-design 
 | IR drop / EM / antenna / UPF / post-fill extraction | **UNSUPPORTED** | `assistant/baseline.py::UNSUPPORTED_CAPABILITIES` | No executable stage exists; do not claim. |
 | Automated regression, tool/PDK/deck provenance pins, preflight | **SUPPORTED** (script exists) | published commit `45e4251`; `assistant/pins.json`, `regression/checks/stage00_preflight.py` | Demonstrated on a fresh run of this exact content (committed as `45e4251`); pins record the developer-host snapshot. |
 
+**LVS qualifier:** every LVS PASS row in this README means topology-only equivalence under academic decks; I/O pin correspondence is unresolved and fail-closed. No signoff or I/O-level LVS equivalence is claimed.
+
 **Reading the matrix:** "DEMONSTRATED" = a recorded run produced fresh tool evidence; "SUPPORTED" = deterministic script/config exists; "UNSUPPORTED" / "NO-MACROS" = no executable stage; "FAILED QUALIFICATION" = real failure retained, not suppressed. Historical Phase 14–18 results below are dated and superseded by this matrix wherever they disagree.
 
-**Portability caveat:** pins and the supported setup describe one validated developer host. They do **not** establish independent portability or signoff on another machine; re-probe and report drift there.
+**Portability caveat:** pins and the supported setup describe one validated developer host. They do **not** establish independent portability or signoff on another machine; re-probe and report drift there. **Fixed-candidate scope (`e591c30a…`):** the full suite, containment, cancellation and targeted security regressions were executed on **one Windows host only** (Python 3.10.11, pytest 9.2.0); WSL was used only as an EDA tool host for the frozen/earlier tree. A second host, a native POSIX suite and real-tool EDA on the fixed candidate are **NOT_TESTED**. Full disclosure: `docs/VALIDATION_SCOPE_AND_PORTABILITY.md`.
 
 ## Publication COMPLETE and current verification (2026-11-18)
 
-**Final independent verdict:** **READY WITH LIMITATIONS** for external evaluation of the supervised academic PD workflow. This is not foundry signoff, not soc_ctrl timing closure, not autonomous RTL-to-GDSII and not tapeout readiness. Full report: `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`.
+**Superseding external assessment (2026-11-26): NOT READY, rating 2 / 5 — Weak.** All historical readiness wording below is superseded; mandatory verdict, limits and residual findings: `docs/EXTERNAL_ASSESSMENT_STATUS.md`.
+
+**Historical verdict (2026-11-18):** READY WITH LIMITATIONS for the supervised academic workflow. **Final independent external assessment (2026-11-26): NOT READY, quality rating 2 / 5 — Weak.** See `docs/EXTERNAL_ASSESSMENT_STATUS.md`. Historical wording below is superseded where it conflicts. This is not foundry signoff, not soc_ctrl timing closure, not autonomous RTL-to-GDSII and not tapeout readiness. Full report: `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`.
 
 **Research study (companion):** the agent performance evaluation study is under `docs/research/` with a frozen protocol, benchmark specifications, scoring rubric, templates and preserved BLOCKED pilot records. Status: **PROTOCOL COMPLETE / PILOT BLOCKED BY MODEL ACCESS**; no model-executed runs or scores exist. See `docs/research/STUDY_STATUS.md`.
 
@@ -43,7 +47,7 @@ This repository provides a deterministic, scripted RTL-to-GDSII physical-design 
 |---|---|---|
 | Foundry signoff | **BLOCKED** | No licensed foundry tool, deck, runset, calibration or signoff authority; academic KLayout results are not signoff |
 | soc_ctrl routed SS timing | **FAIL / BLOCKED** | Best routed `maj3_2` WNS −0.852429 ns, TNS −0.920336 ns, 2 violators at unchanged 10 ns / 2 ns; historical candidate B −1.832469 ns / 4 violators preserved |
-| Other hosts | **NOT_TESTED** | Reproducibility verified on the validated host only; portable overrides are documented but not cross-host proven |
+| Other hosts | **NOT_TESTED** | Reproducibility verified on the validated host only, including the fixed candidate (`e591c30a…`); portable overrides are documented but not cross-host proven. See `docs/VALIDATION_SCOPE_AND_PORTABILITY.md` |
 | Macro example | **NOT_APPLICABLE** | `NA-RULE:NO-MACROS`; no macro/abstract view flow implemented |
 
 **Key reports:** `docs/reviews/second-review.md`, `docs/reviews/final-validation-report.md`, `docs/reviews/NEXT_PHASE_TECHNICAL_REPORT.md`, `docs/reviews/FINAL_INDEPENDENT_QUALIFICATION_REPORT.md`, `docs/reviews/MILESTONE_1G_TECHNICAL_REVIEW.md`, `docs/research/STUDY_STATUS.md`, `docs/reviews/PUBLICATION_REPORT.md`, `docs/reviews/PUBLICATION_MANIFEST.md`.
@@ -119,7 +123,7 @@ Statuses below are historical labels retained for traceability; the authoritativ
 | **Multi-corner STA** | ✅ Configured | TT/SS/FF Liberty corners; Phase 14: 3-corner run, 0 violators at every corner |
 | **GDSII generation** | ✅ Configured | DEF→GDSII via KLayout tech-file reader options; Phase 14: successful generation |
 | **DRC** | ✅ Configured | Sky130 DRC deck, 295 rule categories; Phase 14: 0 actual violations (15 helper regions excluded) |
-| **LVS** | ✅ Configured | Official `sky130hd.lylvs`; Phase 14: genuine LVS PASS ("Congratulations! Netlists match.") |
+| **LVS** | ✅ Configured | Official `sky130hd.lylvs`; Phase 14: **topology-only** equivalence; I/O pin correspondence unresolved and fail-closed; not signoff. |
 | **Automated regression** | ✅ Configured | 15-stage flow with acceptance checks; Phase 14 (historical): 88/88 checks; current 2026-11-16 baseline: 95/95 (92 stage + 3 manifest) |
 | **Reproducibility** | ✅ Verified (Phase 14) | Two runs A&B (Phase 14, historical): 88/88 checks, 20/20 artefacts; current baseline: 95/95; GDSII geometry identical after timestamp stripping |
 | **Negative testing** | ✅ Verified (Phase 15) | N1–N7 all DETECTED; N7 fix: net swap in `15a_lvs_refcdl.tcl` |
@@ -244,7 +248,7 @@ Missing any item = handoff is incomplete = next stage cannot start.
 ### ECO applicability, candidate binding and deadlines (third review, 2026-11-19)
 
 - **Physical ECO applicability is fact-based.** `assistant/eco.py` decides physical-check applicability from a recorded `EcoChangeScope` (target stage and `physical_implementation_present`), never from the absence of macros or the caller's prose. A placed/routed standard-cell ECO requires a fresh DRC PASS even when `has_macros=False`; only netlist-only exploration may declare `NA-RULE:NO-PHYSICAL-IMPLEMENTATION`, corroborated by a registered design fact. Power-intent changes on a physical implementation are **BLOCKED/UNSUPPORTED** (no verifier exists). Deferred physical qualification is never reported as PASS.
-- **The accepted candidate is the exact candidate that was verified.** `evaluate()` is read-only; the workspace is re-hashed and all evidence revalidated immediately before acceptance; an immutable `CandidateRevision` is bound to the evidence and passed downstream. Post-verification mutation, stale evidence, cancellation or persistence failure rejects, rolls back, verifies the restore and blocks downstream.
+- **The accepted candidate is the exact candidate that was verified.** `evaluate()` is read-only; the workspace is re-hashed and all evidence revalidated immediately before acceptance; an immutable `CandidateRevision` is bound to the evidence and passed downstream. Post-verification mutation, stale evidence, cancellation or persistence failure rejects, rolls back, verifies the restore and blocks durable authorization. A cross-process cancellation landing after the final guard recheck can still deliver a PASS-shaped `ExperimentResult` to the downstream callback; downstream consumers must re-check the ledger (unresolved High finding in `docs/EXTERNAL_ASSESSMENT_STATUS.md`).
 - **Verification deadlines are real.** A monotonic clock bounds the whole verification phase; provider-reported `duration_s` is informational and cannot enforce or defeat the deadline. Partial evidence is preserved on timeout, process trees are terminated on supported Windows/WSL paths, and late writes after rollback are detected. Arbitrary non-cooperative Python callbacks cannot be forcibly killed in-process; those results are marked INCONCLUSIVE/BLOCKED, not claimed as hard-deadline successes.
 - **The real runner is tested.** `tests/test_runner_integration_simulated.py` invokes the actual `regression/run_regression.ps1` with fake tools through additive, default-preserving injection seams, proving scheduling, dependency blocking, acceptance parsing, persistence, resume and ValidateOnly against real reports and launch sentinels. See `docs/reviews/third-review.md` and `docs/reviews/third-review-validation.md`.
 
@@ -396,7 +400,7 @@ The engineering workflow follows: agent → skill → inputs → EDA tool execut
 | 7 | Multi-corner STA: TT, SS and FF evaluated | test_counter | 12–13 | TT: WNS 5.5678 ns / hold 0.5231 ns (0 violators); SS: WNS 3.7540 ns / hold 1.6507 ns (0 violators); FF: WNS 5.7656 ns / hold 0.3319 ns (0 violators) |
 | 8 | GDSII: successful generation | test_counter | 9–13 | Via cut layers + net-name labels; 8 standard cells merged with genuine geometry |
 | 9 | DRC: 295 categories, zero violations | test_counter | 13 | 15 helper regions excluded from violation count; report database saved and reopened |
-| 10 | LVS: genuine Sky130 LVS PASS | test_counter | 13 | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
+| 10 | LVS: **topology-only** Sky130 equivalence (I/O pin correspondence unresolved/fail-closed; not signoff) | test_counter | 13 | Official `sky130hd.lylvs`: "Congratulations! Netlists match." |
 | 11 | Automated regression: 88/88 acceptance checks (Phase 14 historical); current 95/95 | test_counter | 14 | Both runs A&B OVERALL PASS |
 | 12 | Reproducibility: 20/20 compared artifacts identical | test_counter | 14 | Bit-identical across runs A&B; GDSII geometry identical after timestamp stripping |
 | 13 | Negative testing: N1–N7 detected | test_counter | 15 | All 7 DETECTED independently; N7 fix: net swap in `15a_lvs_refcdl.tcl` |
@@ -883,7 +887,7 @@ This README has been upgraded from a general project introduction into a profess
 - **K**: Limitations and roadmap - resolved shell blocker, soc_ctrl full regression executed but failed qualification, no foundry signoff evidence, what has been demonstrated through actual runs
 - **L**: Quick start — prerequisites and setup with configurable machine-specific paths; no credentials or tokens are exposed; host-specific paths are validated-host examples and are parameterized through environment overrides
 
-All claims are evidence-based and verified via read-only file inspection across Phases 14–17B. No unexecuted capabilities are claimed. Present-tense "shell blocked" claims have been removed; the Code Mode shell issue is documented only as historical context (Phases 14–17A). The documented baseline command runs today (16/16 stages PASS on test_counter; `baseline_20261116` / `_r2`, `final_r3` / `final_r4`); current run evidence is in `docs/reviews/remediation-report.md` and the post-publication validation record (`docs/reviews/post-publication-validation.md`). Design-specific results are correctly attributed to test_counter (verified execution) vs. soc_ctrl (full run executed in Milestone 1D, `run_pub_m1d_soc_ctrl_full`; FAILED QUALIFICATION with STA/LVS failures retained; no signoff).
+Claims are dated and scoped as recorded; unresolved findings and mandatory disclosures are in \docs/EXTERNAL_ASSESSMENT_STATUS.md\. Present-tense "shell blocked" claims have been removed; the Code Mode shell issue is documented only as historical context (Phases 14–17A). The documented baseline command runs today (16/16 stages PASS on test_counter; `baseline_20261116` / `_r2`, `final_r3` / `final_r4`); current run evidence is in `docs/reviews/remediation-report.md` and the post-publication validation record (`docs/reviews/post-publication-validation.md`). Design-specific results are correctly attributed to test_counter (verified execution) vs. soc_ctrl (full run executed in Milestone 1D, `run_pub_m1d_soc_ctrl_full`; FAILED QUALIFICATION with STA/LVS failures retained; no signoff).
 
 ### Third-review remediation round 2 — acceptance and qualification contracts (2026-11-19)
 
@@ -917,9 +921,16 @@ See `docs/reviews/third-review-validation.md` and
 
 ### Round-3 acceptance lifecycle and reconstruction (2026-11-19)
 
-- Deadline/cancellation are irreversible qualification invalidation: once invalidated, no
-  callback, persistence retry or downstream operation can restore PASS; all durable records
-  agree on one terminal state.
+- Deadline/cancellation are irreversible qualification invalidation **for authorization**:
+  once invalidated, no **durable authorization** can be restored; the in-process downstream callback window remains an unresolved High finding (see `docs/EXTERNAL_ASSESSMENT_STATUS.md`).
+  **Scope correction (2026-11-26):** the two durable artifacts are committed at different
+  instants and need not agree at the transaction level. `state.json:run_status` is the sole
+  authoritative downstream gate; the EXT-04 pre-boundary invariant is enforced in
+  `assistant/controller.py`/`assistant/eco.py`. A cancellation durable only *after* the
+  atomic commit leaves the already-published `exp.json` PASS as a truthful historical
+  commit-time fact, not a grant. The advisory, read-only `assistant/commit_boundary.py`
+  helper can flag that contradiction on request but is not wired into any production path.
+  See "Commit-boundary semantics" below.
 - Every qualification-relevant pinned dependency (22 collateral files + manifest) is hashed
   into the authoritative revision and revalidated at acceptance; incomplete declarations fail closed.
 - Simulated evidence (SIMULATED_PASS) never authorizes production downstream execution;
@@ -936,7 +947,8 @@ See `docs/reviews/remediation-tracker.md` and the round-3 evidence package. No r
 
 - One authoritative, irreversible terminal acceptance decision binds candidate revision, evidence,
   dependency snapshot, applicability, deadline and downstream authorization; transaction tokens
-  prevent contradictory durable records under re-entrancy.
+  prevent contradictory durable records *under re-entrancy at the commit guard*, not across the
+  post-boundary crash window (see "Commit-boundary semantics" below).
 - Physical applicability uses content-based, fail-closed detection (GDSII/OASIS/gzip magics,
   uncertain classification); unscanned extensions no longer qualify as netlist-only.
 - Simulated evidence cannot authorize production gates; gate definitions and provenance are
@@ -945,4 +957,44 @@ See `docs/reviews/remediation-tracker.md` and the round-3 evidence package. No r
   classification; WSL2 descendants and uncooperative Python threads are detected/classified, not
   claimed as prevented.
 See `docs/reviews/remediation-tracker.md` and `D:\audit\third_remediation_round4_20261120\`.
+
+### Commit-boundary semantics and the advisory reconciliation helper (documentation correction, 2026-11-26)
+
+The historical Round-3/Round-4 statements above are bounded as follows. Two durable artifacts
+are written at different instants, so a claim that "all durable records agree on one terminal
+state" — or that a contradictory record is neutralized by code — is not accurate.
+
+- **Commit boundary.** `EcoManager._save_log()` (`assistant/eco.py:1631–1636`) writes a
+  temporary file (`exp.json.r6.<uuid4>.tmp`) with `json.dump` → `flush` → `os.fsync`, then
+  publishes the record with a single atomic `os.replace(tmp, exp.json)` inside
+  `ledger_critical_section(self.controller.state_path)` (`eco.py:1638`), together with the
+  commit-guard stamp and post-write recheck (`eco.py:1639–1665`). That rename is the durable
+  commit boundary for one ECO transaction.
+- **Atomicity.** The rename is the single publish point. A crash before it leaves no published
+  record (possibly an orphan `*.r6.*.tmp`); a crash at/after it leaves exactly the pre- or
+  post-rename record. Atomicity alone does not imply run-level consistency with `state.json`.
+- **Durability.** `fsync` precedes the rename and cancellation is fsync-committed under the
+  same cross-process lock. Consequently two durable but run-level-inconsistent artifacts can
+  coexist (a post-boundary kill before the post-write recheck).
+- **Authorization.** Exclusively `GateController.can_enter_stage`/`evaluate_gate` via
+  `_require_active()` (`controller.py:1530–1535`), keyed on `state.json:run_status`. No
+  `exp.json` field grants authority; `state.json:run_status` is the authoritative downstream
+  gate and all fresh checks fail closed on `CANCELLED`.
+- **EXT-04 pre-boundary invariant.** Enforced in production code: `durable_cancellation_requested()`
+  (`controller.py:3335–3353`) re-reads durable `run_status` under `ledger_critical_section` and
+  fails closed; it is OR'd into the ECO cancellation predicates (`eco.py:1885–1886`, `2249`,
+  `3044`, `3160`). `cancel()` latches first, then commits `CANCELLED` (`controller.py:3355–3369`).
+  A cancellation durable strictly before the rename blocks a qualified PASS.
+- **Historical evidence.** A cancellation durable strictly after the rename cannot retract the
+  append-only, `transaction_token`-bound record. The resulting `PASS`/`SIMULATED`/`cancelled=false`
+  record beside `state.json=CANCELLED` is a truthful commit-time fact superseded at the run level
+  — not a grant, and not "neutralized" by any code path.
+- **Helper status.** `assistant/commit_boundary.py` is an advisory, **read-only** interpretation
+  helper: it imports only `json`, `dataclasses`, `pathlib` and `typing`, reads via
+  `Path.read_text`/`json.loads`, writes nothing, enforces no authorization, and is imported or
+  called by no production path (only `_s2_scratch/s2_boundary_harness.py` and
+  `tests/test_s2_commit_boundary.py`). It only labels the contradiction for a consumer that
+  chooses to call it; `GateController` remains the authority. No production consumer was found
+  that treats the raw record as authority.
+
 No readiness claim.

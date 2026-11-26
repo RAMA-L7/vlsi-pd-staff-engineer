@@ -9,7 +9,10 @@ then produces a clean qualified downstream PASS.
 
 Every "exploit_*" test below MUST fail on the vulnerable code and pass after
 the fix; the "guard_*" tests must pass on both (they protect against an
-over-broad fix that would weaken valid waivers / N/A / genuine tool PASS).
+over-broad fix that would weaken valid N-A / genuine tool PASS). EXT-05
+refines the waiver guard: a waived FAIL still reports WAIVED_PASS for workflow
+continuity but is non-authorizing (qualified=False), so the guard asserts the
+weaker, correct authorization property instead.
 """
 from __future__ import annotations
 
@@ -57,7 +60,7 @@ def _genuine_pass(tmp_path: Path, check_id: str) -> Evidence:
     )
     try:
         import r62_proof_helper as _ph
-        _d, _cmd = _ph.proof_and_command()
+        _d, _cmd = _ph.proof_and_command(check_id=check_id)
         if _d is not None:
             _gv.execution_proof = _d
             object.__setattr__(_gv, "command", list(_cmd))
@@ -254,7 +257,8 @@ def test_guard_genuine_tool_upstream_pass_still_authorizes(tmp_path):
     assert ok, reasons
 
 
-def test_guard_valid_waiver_upstream_still_authorizes(tmp_path):
+def test_guard_waived_upstream_never_authorizes(tmp_path):
+    """EXT-05: a waived FAIL reports WAIVED_PASS but is not qualified."""
     state = tmp_path / "state.json"
     ctl = GateController(str(state))
     ctl.record_evidence(
@@ -271,10 +275,10 @@ def test_guard_valid_waiver_upstream_still_authorizes(tmp_path):
     ))
     ctl.record_evidence(_genuine_pass(tmp_path, "up_proof"))
     up = ctl.evaluate_gate("UP", ["antenna", "up_proof"])
-    assert up.disposition == "WAIVED_PASS" and up.qualified is True
+    assert up.disposition == "WAIVED_PASS"
+    assert up.qualified is False  # waived check is non-authorizing (B-03)
     gd = _exploit_downstream(ctl)
-    assert gd.disposition == "CLEAN_PASS"
-    assert gd.qualified is True
+    assert gd.qualified is False  # a non-qualified upstream cannot authorize DOWN
 
 
 def test_guard_valid_not_applicable_upstream_still_authorizes(tmp_path):

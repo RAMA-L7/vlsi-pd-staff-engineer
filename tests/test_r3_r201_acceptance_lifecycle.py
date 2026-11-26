@@ -13,6 +13,7 @@ and PASS after the fix. The ones marked "GUARD" must hold both before and after
 """
 from __future__ import annotations
 
+import json
 import threading
 from types import SimpleNamespace
 
@@ -243,24 +244,73 @@ def test_downstream_failure_after_expiry_is_not_a_pass_record(env):
 # ---------------------------------------------------------------------------
 
 def test_terminal_amend_survives_persistence_failure_and_retry(env):
-    """EXPLOIT: first amend write fails; retry must still persist non-PASS."""
+    """Single-commit contract: expiry + a failed write + retry leave ONE terminal.
+
+    The R5/R6 architecture intentionally removed the post-commit ``_amend_last``
+    write that the original version of this test injected.  The deadline is now
+    stamped into the SAME atomic write, so there is no second "amend" record to
+    fail.  This test keeps the original security intent (a transient persistence
+    failure followed by a retry must never restore a durable PASS) but asserts
+    the stronger, current invariant on the single durable record.
+    """
     e = env
-    original = e.eco._save_log
-    state = {"commit_expired": False, "amend_failed": False}
+    real_replace = eco_mod.os.replace
+    state = {"attempts": 0}
 
-    def hooked():
-        if _on_pass_commit(e.eco) and not state["commit_expired"]:
-            state["commit_expired"] = True
+    def flaky_commit(src, dst, *args, **kwargs):
+        # Only ECO's experiment log is the acceptance commit; the controller's
+        # own state save must not consume the injection.
+        if not str(dst).endswith("exp.json"):
+            return real_replace(src, dst, *args, **kwargs)
+        state["attempts"] += 1
+        if state["attempts"] == 1:
+            # Expiry after the guard's pre-write evaluation but at the physical
+            # commit boundary, plus a transient write failure -> retry required.
             e.clock.advance(1.0)
-        if _on_terminal_amend(e.eco) and not state["amend_failed"]:
-            state["amend_failed"] = True
-            raise OSError("SIMULATED transient persist failure on amend")
-        return original()
+            raise OSError("SIMULATED transient persist failure at single commit")
+        return real_replace(src, dst, *args, **kwargs)
 
-    e.monkeypatch.setattr(e.eco, "_save_log", hooked)
+    e.monkeypatch.setattr(eco_mod.os, "replace", flaky_commit)
     result = _run(e, verify=_provider(e.rep))
-    assert state["commit_expired"] and state["amend_failed"]
+    assert state["attempts"] >= 2, "retry loop must re-run the single commit"
     _assert_single_terminal(e, result, deadline=True)
+    durable = json.loads((e.tmp_path / "exp.json").read_text(encoding="utf-8"))
+    assert len(durable["experiments"]) == 1, durable["experiments"]
+    record = durable["experiments"][0]
+    assert record["status"] != "PASS", record
+    assert record["deadline_exceeded"] is True, record
+    assert record.get("commit_guard_expired") is True, record
+
+
+def test_expiry_inside_atomic_commit_is_corrected_without_post_commit_amend(env):
+    """Regression: invalidation at os.replace is corrected inside the commit path.
+
+    No post-commit amendment API is used.  The commit-time stamp/re-check and
+    the retry loop must still converge on exactly one non-authorizing record.
+    """
+    e = env
+    real_replace = eco_mod.os.replace
+    state = {"attempts": 0}
+
+    def invalidating_replace(src, dst, *args, **kwargs):
+        if not str(dst).endswith("exp.json"):
+            return real_replace(src, dst, *args, **kwargs)
+        state["attempts"] += 1
+        real_replace(src, dst, *args, **kwargs)
+        if state["attempts"] == 1:
+            # The first physical write succeeded; invalidate before the
+            # post-write re-check, which must fail closed and force a retry.
+            e.clock.advance(1.0)
+        return None
+
+    e.monkeypatch.setattr(eco_mod.os, "replace", invalidating_replace)
+    result = _run(e, verify=_provider(e.rep))
+    assert state["attempts"] >= 2, "post-write invalidation must force re-stamping"
+    _assert_single_terminal(e, result, deadline=True)
+    durable = json.loads((e.tmp_path / "exp.json").read_text(encoding="utf-8"))
+    assert len(durable["experiments"]) == 1, durable["experiments"]
+    assert durable["experiments"][0]["status"] != "PASS"
+    assert durable["experiments"][0]["deadline_exceeded"] is True
 
 
 # ---------------------------------------------------------------------------

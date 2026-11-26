@@ -14,7 +14,9 @@ as authoritative and upstream re-evaluation fails closed.
 
 The ``test_exploit_*`` tests below fail on the vulnerable baseline and pass
 after the fix. The ``test_guard_*`` tests pass on both and protect legitimate
-default-spec, tool-PASS, waiver, N/A and provisioned-restart flows.
+default-spec, tool-PASS, validated N/A and provisioned-restart flows. EXT-05
+tightens the waiver guard: WAIVED_PASS stays visible (reporting) but never
+confers production authorization.
 """
 from __future__ import annotations
 
@@ -64,7 +66,7 @@ def _genuine_pass(tmp_path: Path, check_id: str) -> Evidence:
     # keeps its original security purpose (MAC binding, provenance, downstream).
     try:
         import r62_proof_helper as _ph
-        _d, _cmd = _ph.proof_and_command()
+        _d, _cmd = _ph.proof_and_command(check_id=check_id)
         if _d is not None:
             ev.execution_proof = _d
             object.__setattr__(ev, "command", list(_cmd))
@@ -426,7 +428,8 @@ def test_guard_genuine_tool_pass_authorizes(tmp_path):
     assert ok
 
 
-def test_guard_valid_waiver_still_authorizes(tmp_path):
+def test_guard_waived_gate_never_authorizes(tmp_path):
+    """EXT-05: WAIVED_PASS is a reporting state, never production authorization."""
     state = tmp_path / "state.json"
     c = GateController(str(state))
     c.record_evidence(Evidence.from_run(
@@ -438,13 +441,15 @@ def test_guard_valid_waiver_still_authorizes(tmp_path):
         check_id="antenna", scope="UP", reason="documented tool gap in corner",
         approved_by="reviewer", policy="tool_gap",
     ))
-    # R6.2: the UP gate also carries a proof-bearing check so it can authorize
-    # production; the waiver assertion below is unchanged.
     c.record_evidence(_genuine_pass(tmp_path, "up_proof"))
-    assert c.evaluate_gate("UP", ["antenna", "up_proof"]).disposition == "WAIVED_PASS"
+    up = c.evaluate_gate("UP", ["antenna", "up_proof"])
+    assert up.disposition == "WAIVED_PASS" and up.passed
+    # Even with a second proof-bearing check carrying genuine proof, the waived
+    # FAIL must not be laundered into a qualified gate.
+    assert up.qualified is False
     assert c.evaluate_gate(
         "DOWN", ["sta_down"], upstream_gates=["UP"]
-    ).qualified is True
+    ).qualified is False
 
 
 def test_guard_validated_not_applicable_still_authorizes(tmp_path):

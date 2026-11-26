@@ -152,6 +152,11 @@ def _normalize_payload(d: Mapping) -> dict:
         value = d[field]
         if field in _STRING_FIELDS and not isinstance(value, str):
             raise ValueError(f"malformed evidence envelope: {field!r} must be a string")
+        # R7.1: check_id is an authorization identity. An envelope that names no
+        # check can never authorize anything, so refuse it at the boundary in
+        # BOTH signing and verification paths.
+        if field == "check_id" and not value.strip():
+            raise ValueError("malformed evidence envelope: empty check_id")
         payload[field] = _to_jsonable(value)
     if not isinstance(payload["execution_identity"], dict):
         raise ValueError("malformed evidence envelope: execution_identity must be a mapping")
@@ -296,6 +301,19 @@ class EvidenceEnvelope:
 
         return self.provenance in AUTHORIZING
 
+    def authorizes_check(self, check_id: str) -> bool:
+        """R7.1: whether this envelope's MAC-bound check_id names *check_id*.
+
+        This is the authoritative evidence-to-check identity predicate. It is
+        safe to call on an envelope only after construction through
+        ``from_dict``/``make_envelope`` (both verify the MAC).
+        """
+        return (
+            isinstance(check_id, str)
+            and bool(check_id.strip())
+            and self.check_id == check_id
+        )
+
 
 def make_envelope(
     evidence_id: str,
@@ -348,6 +366,22 @@ def make_envelope(
     )
 
 
+def authorizes_check(envelope, check_id: str) -> bool:
+    """R7.1 module-level predicate, tolerant of legacy/fake envelope objects.
+
+    Prefers the envelope's own MAC-bound predicate; falls back to comparing the
+    already-verified ``check_id`` attribute for older implementations. Never
+    consults a caller-supplied mapping or ledger field.
+    """
+    if envelope is None or not isinstance(check_id, str) or not check_id.strip():
+        return False
+    method = getattr(envelope, "authorizes_check", None)
+    if callable(method):
+        return bool(method(check_id))
+    bound = getattr(envelope, "check_id", None)
+    return isinstance(bound, str) and bound == check_id
+
+
 __all__ = [
     "DOMAIN_EVIDENCE",
     "Provenance",
@@ -355,6 +389,7 @@ __all__ = [
     "EvidenceEnvelope",
     "legal_transition",
     "make_envelope",
+    "authorizes_check",
 ]
 
 
